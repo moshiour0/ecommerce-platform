@@ -40,3 +40,8 @@ dispatch_rules = load_module(
     "dispatch_rules_under_test",
     "workers/saga-dispatcher/app/dispatch_rules.py",
 )
+
+refund_rules = load_module(
+    "refund_rules_under_test",
+    "services/payment-service/app/services/refund_rules.py",
+)

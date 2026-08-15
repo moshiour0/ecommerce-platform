@@ -7,16 +7,19 @@ from sqlalchemy.future import select
 from fastapi import HTTPException
 from ..models import PaymentLedger, OutboxMessage, IdempotencyKey
 from ..schemas import ChargeRequest, RefundRequest, RefundResponse
+from .refund_rules import LedgerEntry, plan_refund
 
 logger = logging.getLogger(__name__)
 
 # Ledger row statuses. The ledger is append-only: a refund never mutates the
 # original charge, it appends a reversing entry. Summing amount_cents for an
 # order therefore always yields the true net position.
-STATUS_SUCCESS = "SUCCESS"
-STATUS_REFUNDED = "REFUNDED"
-STATUS_REFUND_NOOP = "REFUND_NOOP"
-SETTLED_STATUSES = (STATUS_REFUNDED, STATUS_REFUND_NOOP)
+# Ledger statuses live in refund_rules, which is the single definition the
+# unit tests exercise; duplicating them here is how two copies of one
+# vocabulary start disagreeing.
+from .refund_rules import (  # noqa: E402
+    STATUS_SUCCESS, STATUS_REFUNDED, STATUS_REFUND_NOOP, SETTLED_STATUSES,
+)
 
 async def process_charge(db: AsyncSession, request: ChargeRequest, idempotency_key: str) -> PaymentLedger:
     # Check idempotency — return cached result on retry (Rule 4)
@@ -119,22 +122,13 @@ async def process_refund(db: AsyncSession, request: RefundRequest, idempotency_k
         text("SELECT pg_advisory_xact_lock(hashtext(:oid))"), {"oid": order_id}
     )
 
-    # Already settled? Then this is a retry — report the prior outcome.
+    # Already settled? Then this is a retry.
     settled = await db.execute(
         select(PaymentLedger)
         .where(PaymentLedger.order_id == request.order_id)
         .where(PaymentLedger.status.in_(SETTLED_STATUSES))
     )
     prior = settled.scalars().first()
-    if prior:
-        already_refunded = prior.status == STATUS_REFUNDED
-        return RefundResponse(
-            order_id=request.order_id,
-            refunded=already_refunded,
-            refunded_cents=abs(prior.amount_cents),
-            status=prior.status,
-            detail="Already settled — returning prior outcome"
-        )
 
     # Find the charge being reversed.
     charge_result = await db.execute(
@@ -145,38 +139,40 @@ async def process_refund(db: AsyncSession, request: RefundRequest, idempotency_k
     )
     charge = charge_result.scalar_one_or_none()
 
-    if charge is None:
-        # No money moved. Record the no-op so a later retry is cheap and
-        # auditable, and still emit PaymentRefunded so the saga can reach
-        # ROLLBACK_COMPLETED instead of stalling at TIMED_OUT.
-        refunded_cents = 0
-        ledger_row = PaymentLedger(
-            id=uuid.uuid4(),
+    # The decision lives in refund_rules so the money path is testable without
+    # a database. This function keeps locking, querying and persistence.
+    plan = plan_refund(
+        prior=LedgerEntry(prior.status, prior.amount_cents) if prior else None,
+        charge=LedgerEntry(charge.status, charge.amount_cents) if charge else None,
+    )
+
+    if plan.append_status is None:
+        # Already settled: append nothing, emit nothing, report the prior
+        # outcome. Appending here is exactly what a second refund looks like.
+        return RefundResponse(
             order_id=request.order_id,
-            user_id=request.user_id,
-            amount_cents=0,
-            currency="USD",
-            payment_token="n/a",
-            status=STATUS_REFUND_NOOP,
-            created_at=datetime.now(timezone.utc)
+            refunded=plan.refunded,
+            refunded_cents=plan.refunded_cents,
+            status=prior.status,
+            detail=plan.detail,
         )
-        detail = "No charge found for this order — recorded as no-op"
-        logger.info(f"Refund no-op for order={order_id}: no successful charge exists")
-    else:
-        # Append a reversing entry. The original charge is never mutated.
-        refunded_cents = charge.amount_cents
-        ledger_row = PaymentLedger(
-            id=uuid.uuid4(),
-            order_id=request.order_id,
-            user_id=charge.user_id,
-            amount_cents=-charge.amount_cents,
-            currency=charge.currency,
-            payment_token=charge.payment_token,
-            status=STATUS_REFUNDED,
-            created_at=datetime.now(timezone.utc)
-        )
-        detail = f"Refunded {refunded_cents} cents"
-        logger.info(f"Refunding order={order_id} amount_cents={refunded_cents}")
+
+    # Identity fields come from the charge when one exists, so the reversal
+    # carries the same currency and token as the entry it reverses.
+    ledger_row = PaymentLedger(
+        id=uuid.uuid4(),
+        order_id=request.order_id,
+        user_id=charge.user_id if charge else request.user_id,
+        amount_cents=plan.append_amount_cents,
+        currency=charge.currency if charge else "USD",
+        payment_token=charge.payment_token if charge else "n/a",
+        status=plan.append_status,
+        created_at=datetime.now(timezone.utc),
+    )
+    refunded_cents = plan.refunded_cents
+    detail = plan.detail
+    logger.info(f"Refund plan for order={order_id}: {plan.outcome.value} "
+                f"amount_cents={plan.append_amount_cents}")
 
     db.add(ledger_row)
 
@@ -207,8 +203,8 @@ async def process_refund(db: AsyncSession, request: RefundRequest, idempotency_k
 
     return RefundResponse(
         order_id=request.order_id,
-        refunded=charge is not None,
-        refunded_cents=refunded_cents,
+        refunded=plan.refunded,
+        refunded_cents=plan.refunded_cents,
         status=ledger_row.status,
-        detail=detail
+        detail=detail,
     )
