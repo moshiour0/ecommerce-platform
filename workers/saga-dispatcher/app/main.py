@@ -47,6 +47,7 @@ from python_common.resilience import (
     BulkheadFullError,
     CircuitOpenError,
 )
+from python_common.tracing import get_tracer, setup_tracing, start_consumer_span
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -54,6 +55,10 @@ _handler = logging.StreamHandler()
 _handler.setFormatter(jsonlogger.JsonFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
 if not logger.handlers:
     logger.addHandler(_handler)
+
+# Rule 6: a real TracerProvider must exist before any span is opened.
+setup_tracing("saga-dispatcher")
+tracer = get_tracer(__name__)
 
 CONSUMER_NAME = "saga-dispatcher"
 INSTANCE_ID = f"{CONSUMER_NAME}@{socket.gethostname()}"
@@ -265,6 +270,10 @@ async def handle(msg_id, msg_type: str, payload: dict) -> bool:
     return True
 
 
+def order_id_of(payload: dict) -> str | None:
+    return payload.get("order_id")
+
+
 async def process_one(pool: asyncpg.Pool, row) -> bool:
     """Work phase. No transaction is held here. True when the row settled."""
     msg_id, msg_type = row["id"], row["type"]
@@ -282,18 +291,29 @@ async def process_one(pool: asyncpg.Pool, row) -> bool:
         return True
 
     _stats["claimed"] += 1
-    try:
-        settled = await handle(msg_id, msg_type, payload)
-    except (CircuitOpenError, BulkheadFullError) as exc:
-        # Shed load without consuming a retry budget: the command goes back on
-        # the queue untouched and the next tick tries again.
-        _stats["short_circuited"] += 1
-        logger.warning(f"Shedding {msg_type} ({msg_id}): {exc}")
-        settled = False
-    except Exception as exc:
-        _stats["errors"] += 1
-        logger.error(f"Command {msg_type} ({msg_id}) raised: {exc}")
-        settled = False
+    # Rule 6.4: link this span to the producer's span carried in the payload.
+    # A link, not a parent: the producing span ended when the transaction
+    # committed, so the two are causally related but not nested. Commands the
+    # reaper emits via raw SQL carry no trace context -- they originate in a
+    # background sweep with no inbound request -- and start a root span here.
+    with start_consumer_span(
+        tracer, f"dispatch {msg_type}", payload,
+        **{"saga.order_id": order_id_of(payload),
+           "saga.command": msg_type,
+           "messaging.message_id": str(msg_id)},
+    ):
+        try:
+            settled = await handle(msg_id, msg_type, payload)
+        except (CircuitOpenError, BulkheadFullError) as exc:
+            # Shed load without consuming a retry budget: the command goes back
+            # on the queue untouched and the next tick tries again.
+            _stats["short_circuited"] += 1
+            logger.warning(f"Shedding {msg_type} ({msg_id}): {exc}")
+            settled = False
+        except Exception as exc:
+            _stats["errors"] += 1
+            logger.error(f"Command {msg_type} ({msg_id}) raised: {exc}")
+            settled = False
 
     if settled:
         await mark_processed(pool, msg_id)
@@ -340,6 +360,15 @@ async def _startup():
     global _pool, _client, _dispatch_task
     _pool = await asyncpg.create_pool(ORDER_DB_URL, min_size=2, max_size=10)
     _client = httpx.AsyncClient()
+    # Rule 6.3: propagate the trace over outbound HTTP. Without W3C
+    # traceparent headers each downstream call starts a brand new trace and
+    # the chain breaks at the very first hop out of this worker.
+    try:
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+        HTTPXClientInstrumentor().instrument_client(_client)
+        logger.info("httpx client instrumented for trace propagation")
+    except Exception as exc:
+        logger.warning(f"httpx instrumentation unavailable: {exc}")
     _dispatch_task = asyncio.create_task(dispatch_loop())
 
 

@@ -146,6 +146,30 @@ services:
       - mesh
 
   # ==========================================
+  # OBSERVABILITY (Rule 6)
+  # ==========================================
+  # Services already called FastAPIInstrumentor.instrument_app, but only
+  # opentelemetry-api was installed and no TracerProvider was ever set, so
+  # every span was non-recording and there was nowhere to send one. Without a
+  # collector, Rule 6.4's outbox trace injection has nothing to inject.
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # UI
+      - "4318:4318"     # OTLP/HTTP receiver
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:16686/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    networks:
+      - mesh
+
+  # ==========================================
   # CDC OUTBOX WORKER
   # ==========================================
   debezium:

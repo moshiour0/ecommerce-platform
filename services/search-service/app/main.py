@@ -4,6 +4,7 @@ from pythonjsonlogger import jsonlogger
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from .routes import search
 from .es_client import async_es
+from python_common.tracing import setup_tracing
 
 # Setup structured JSON logging
 logger = logging.getLogger()
@@ -20,6 +21,10 @@ app = FastAPI(title="Search Service")
 app.include_router(search.router)
 
 # Instrument FastAPI with OpenTelemetry
+# Rule 6: install a real TracerProvider before instrumenting. Without it
+# every span is non-recording and Rule 6.4's outbox injection writes nothing.
+setup_tracing("search-service")
+
 FastAPIInstrumentor.instrument_app(app)
 
 @app.on_event("startup")

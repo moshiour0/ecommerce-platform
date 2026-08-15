@@ -5,6 +5,9 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from .routes import inventory
 from python_common.retention import start_outbox_cleanup
 from .database import engine
+from python_common.tracing import setup_tracing
+from python_common.tracing import enable_outbox_trace_injection
+from .models import OutboxMessage
 
 # Setup structured JSON logging
 logger = logging.getLogger()
@@ -21,6 +24,15 @@ app = FastAPI(title="Inventory Service")
 app.include_router(inventory.router)
 
 # Instrument FastAPI with OpenTelemetry
+# Rule 6: install a real TracerProvider before instrumenting. Without it
+# every span is non-recording and Rule 6.4's outbox injection writes nothing.
+setup_tracing("inventory-service")
+# Rule 6.4: inject trace context into every outbox row on insert.
+# A mapper listener rather than a helper each caller must remember --
+# build_outbox_message was exactly such a helper and went uncalled for
+# the entire life of the project.
+enable_outbox_trace_injection(OutboxMessage)
+
 FastAPIInstrumentor.instrument_app(app)
 
 @app.on_event("startup")

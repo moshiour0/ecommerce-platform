@@ -111,6 +111,7 @@ services:
       - "8004:8004"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/user_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8004" ]
 
   catalog-service:
@@ -124,6 +125,7 @@ services:
       - "8005:8005"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/catalog_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8005" ]
 
   search-service:
@@ -137,6 +139,7 @@ services:
       - "8006:8006"
     environment:
       - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8006" ]
 
   cart-service:
@@ -150,6 +153,7 @@ services:
       - "8007:8007"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/cart_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8007" ]
 
   pricing-service:
@@ -163,6 +167,7 @@ services:
       - "8008:8008"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/pricing_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8008" ]
 
   promotion-service:
@@ -176,6 +181,7 @@ services:
       - "8009:8009"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/promo_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8009" ]
 
   tax-service:
@@ -189,6 +195,7 @@ services:
       - "8010:8010"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/tax_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010" ]
 
   delivery-quote-service:
@@ -202,6 +209,7 @@ services:
       - "8011:8011"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/delivery_quote_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8011" ]
 
   order-saga:
@@ -215,6 +223,7 @@ services:
       - "8012:8012"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/order_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8012" ]
 
   inventory-service:
@@ -228,6 +237,7 @@ services:
       - "8013:8013"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/inventory_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8013" ]
 
   fraud-service:
@@ -241,6 +251,7 @@ services:
       - "8014:8014"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/fraud_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8014" ]
 
   payment-service:
@@ -254,6 +265,7 @@ services:
       - "8015:8015"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/payment_ledger_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8015" ]
 
   fulfillment-service:
@@ -267,6 +279,7 @@ services:
       - "8016:8016"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/fulfillment_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8016" ]
 
   notification-service:
@@ -280,6 +293,7 @@ services:
       - "8017:8017"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/notification_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8017" ]
 
   media-service:
@@ -293,6 +307,7 @@ services:
       - "8018:8018"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/media_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8018" ]
 
   audit-service:
@@ -306,6 +321,7 @@ services:
       - "8019:8019"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/audit_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8019" ]
 
   stream-processor:
@@ -325,6 +341,7 @@ services:
         condition: service_healthy
     environment:
       - PYTHONPATH=/app:/app/shared_libs
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     # Worker has no API ports to expose
     command: [ "python", "-m", "app.main" ]
 
@@ -347,6 +364,7 @@ services:
       - SAGA_URL=http://order-saga:8012/orders
       - INVENTORY_URL=http://inventory-service:8013/inventory
       - PAYMENT_URL=http://payment-service:8015/payments
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8030" ]
 
 networks:

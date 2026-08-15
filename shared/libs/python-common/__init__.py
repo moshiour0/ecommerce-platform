@@ -27,6 +27,11 @@ __all__ = [
     "outbox_cleanup_loop",
     "prune_outbox_once",
     "start_outbox_cleanup",
+    "setup_tracing",
+    "inject_trace_context",
+    "enable_outbox_trace_injection",
+    "start_consumer_span",
+    "get_tracer",
 ]
 
 # Public name -> submodule that defines it.
@@ -38,6 +43,11 @@ _LAZY_EXPORTS = {
     "outbox_cleanup_loop": ".retention",
     "prune_outbox_once": ".retention",
     "start_outbox_cleanup": ".retention",
+    "setup_tracing": ".tracing",
+    "inject_trace_context": ".tracing",
+    "enable_outbox_trace_injection": ".tracing",
+    "start_consumer_span": ".tracing",
+    "get_tracer": ".tracing",
 }
 
 
