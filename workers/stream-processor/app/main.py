@@ -93,7 +93,12 @@ def main():
         except Exception as route_err:
             logger.error(f"Event router execution failed: {route_err}. Engaging Direct ES Fallback for doc_id={doc_id}.")
             import requests
-            es_res = requests.put(f"http://elasticsearch:9200/products/_doc/{doc_id}", json=payload)
+            from .indexers.es_client import ES_URL, INDEX_NAME
+            # Was a second hardcoded http://elasticsearch:9200. Two addresses for
+            # one dependency means pointing the worker at a different cluster
+            # silently moves only half its writes.
+            es_res = requests.put(
+                f"{ES_URL}/{INDEX_NAME}/_doc/{doc_id}", json=payload, timeout=30)
             logger.debug(f"Direct Fallback ES Response: {es_res.status_code} - {es_res.text}")
 
     consumer = KafkaAvroConsumer(

@@ -31,6 +31,8 @@ spec:
         image: ecommerce-platform-stream-processor:latest
         imagePullPolicy: IfNotPresent
         env:
+        - name: ELASTICSEARCH_URL
+          value: http://elasticsearch:9200
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: http://jaeger:4318
         - name: PYTHONPATH

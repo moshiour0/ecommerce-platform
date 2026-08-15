@@ -370,6 +370,7 @@ services:
     environment:
       - PYTHONPATH=/app:/app/shared_libs
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
     # Worker has no API ports to expose
     command: [ "python", "-m", "app.main" ]
 
