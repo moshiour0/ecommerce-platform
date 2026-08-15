@@ -5,6 +5,14 @@ import sys
 import json
 import os
 
+# Windows consoles default to cp1252, which cannot encode the non-ASCII
+# characters in this file's output. Without this the test dies with
+# UnicodeEncodeError before running a single assertion — and because the
+# traceback goes to stderr, a piped run still looked like it passed.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 PRICING_URL = "http://localhost:8008/prices/"
 INVENTORY_URL = "http://localhost:8013/inventory/reserve"
 SEARCH_URL = "http://localhost:8006/search"

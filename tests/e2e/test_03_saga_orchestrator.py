@@ -9,6 +9,7 @@ import asyncpg
 ORDER_SAGA_URL = "http://localhost:8012/orders"
 STATE_FILE = ".e2e_state.json"
 DB_URL = os.getenv("DATABASE_URL", "postgresql://admin:supersecret@localhost:5432/order_db")
+INVENTORY_DB_URL = os.getenv("INVENTORY_DATABASE_URL", "postgresql://admin:supersecret@localhost:5432/inventory_db")
 
 def get_product_id():
     if not os.path.exists(STATE_FILE):
@@ -57,6 +58,24 @@ async def main():
         
         headers = {"Idempotency-Key": idempotency_key}
 
+        # Seed inventory for the product under test. This previously relied on
+        # inventory-service auto-creating 9999 units for any unknown product,
+        # a backdoor removed by C-2. Without an explicit fixture the
+        # reservation fails and the saga compensates instead of completing.
+        inv_conn = await asyncpg.connect(INVENTORY_DB_URL)
+        try:
+            await inv_conn.execute(
+                """INSERT INTO inventory_items
+                       (id, product_id, quantity_available, quantity_reserved, updated_at)
+                   VALUES ($1, $2, $3, 0, NOW())
+                   ON CONFLICT (product_id) DO UPDATE
+                       SET quantity_available = EXCLUDED.quantity_available""",
+                uuid.uuid4(), uuid.UUID(product_id), 10
+            )
+        finally:
+            await inv_conn.close()
+        print(f"0. Seeded inventory: 10 units for product {product_id[:8]}")
+
         print(f"1. Injecting Order into Saga Orchestrator (User: {user_id[:8]})...")
         async with httpx.AsyncClient() as client:
             try:
@@ -89,9 +108,16 @@ async def main():
                         current_status = row['status']
                         print(f"   [Attempt {attempt}/15] Order Status: {current_status}")
                         
-                        if current_status in ["ORDER_COMPLETED", "ROLLBACK_COMPLETED"]:
-                            print(f"\n[SUCCESS] SUCCESS: Saga reached terminal state: {current_status}")
+                        # ROLLBACK_COMPLETED is terminal but it is not success:
+                        # it means the order was compensated away. Accepting any
+                        # terminal state reported a failed saga as green.
+                        if current_status == "ORDER_COMPLETED":
+                            print(f"\n[SUCCESS] Saga completed the happy path: {current_status}")
                             return
+                        if current_status in ("ROLLBACK_COMPLETED", "TIMED_OUT"):
+                            print(f"\n[FAIL] Saga reached {current_status} instead of completing.")
+                            print("        Compensation worked, but this test asserts success.")
+                            sys.exit(1)
                     else:
                         print(f"   [Attempt {attempt}/15] Failed to fetch order status from DB.")
                 print("\n[WARNING] Polling timeout. Saga did not reach terminal state.")

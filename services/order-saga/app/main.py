@@ -49,19 +49,32 @@ async def saga_reaper_loop():
         try:
             async with engine.begin() as conn:
                 result = await conn.execute(text("""
-                    WITH timed_out AS (
-                        UPDATE order_saga_states
-                        SET status = 'TIMED_OUT', updated_at = NOW()
+                    -- Capture the pre-update status first. UPDATE ... RETURNING
+                    -- yields the NEW row, so returning `status` here would give
+                    -- 'TIMED_OUT' for every row, no CASE arm would match, and
+                    -- unnest(NULL) would emit zero compensating commands --
+                    -- silently reaping sagas without compensating them.
+                    -- SKIP LOCKED keeps concurrent reaper replicas from blocking.
+                    WITH candidates AS (
+                        SELECT id, user_id, status
+                        FROM order_saga_states
                         WHERE status IN ('PENDING', 'INVENTORY_RESERVED', 'PAID')
                           AND updated_at < NOW() - INTERVAL '15 minutes'
-                        RETURNING id, user_id, status
+                        FOR UPDATE SKIP LOCKED
+                    ),
+                    timed_out AS (
+                        UPDATE order_saga_states s
+                        SET status = 'TIMED_OUT', updated_at = NOW()
+                        FROM candidates c
+                        WHERE s.id = c.id
+                        RETURNING s.id, c.user_id, c.status AS previous_status
                     ),
                     commands AS (
-                        SELECT t.id, t.user_id, t.status, c.cmd
+                        SELECT t.id, t.user_id, t.previous_status AS status, c.cmd
                         FROM timed_out t
                         CROSS JOIN LATERAL (
                             SELECT unnest(
-                                CASE t.status
+                                CASE t.previous_status
                                     WHEN 'PENDING' THEN
                                         ARRAY['SagaTimedOut']
                                     WHEN 'INVENTORY_RESERVED' THEN
@@ -72,8 +85,15 @@ async def saga_reaper_loop():
                             ) AS cmd
                         ) c
                     )
-                    INSERT INTO outbox_messages (aggregate_type, aggregate_id, type, payload)
+                    -- id and created_at must be supplied explicitly. Their
+                    -- defaults live on the SQLAlchemy model (default=uuid.uuid4),
+                    -- which only applies to ORM inserts -- raw SQL gets NULL and
+                    -- violates the not-null constraint. A NULL created_at would
+                    -- also make the row invisible to the 7-day retention job.
+                    INSERT INTO outbox_messages
+                        (id, aggregate_type, aggregate_id, type, payload, created_at)
                     SELECT
+                        gen_random_uuid(),
                         'OrderSaga',
                         id::text,
                         cmd,
@@ -82,7 +102,8 @@ async def saga_reaper_loop():
                             'user_id', user_id::text,
                             'previous_status', status,
                             'reason', 'Saga timeout after 15 minutes'
-                        )
+                        ),
+                        NOW()
                     FROM commands
                     RETURNING aggregate_id, type;
                 """))
