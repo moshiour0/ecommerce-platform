@@ -8,6 +8,9 @@ from fastapi import HTTPException
 from ..models import PaymentLedger, OutboxMessage, IdempotencyKey
 from ..schemas import ChargeRequest, RefundRequest, RefundResponse
 from .refund_rules import LedgerEntry, plan_refund
+from .charge_rules import (
+    IdempotencyOutcome, authorize, event_for, resolve_idempotency,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,25 +29,45 @@ async def process_charge(db: AsyncSession, request: ChargeRequest, idempotency_k
     from sqlalchemy.dialects.postgresql import insert
     stmt = insert(IdempotencyKey).values(key=idempotency_key).on_conflict_do_nothing()
     result = await db.execute(stmt)
-    if result.rowcount == 0:
-        # Key already exists — return the cached result
+    key_was_inserted = result.rowcount == 1
+
+    stored_result_id, cached = None, None
+    if not key_was_inserted:
         existing_key = await db.execute(
             select(IdempotencyKey).where(IdempotencyKey.key == idempotency_key)
         )
         idem_record = existing_key.scalar_one_or_none()
-        if idem_record and idem_record.result_id:
+        stored_result_id = idem_record.result_id if idem_record else None
+        if stored_result_id is not None:
             cached_result = await db.execute(
-                select(PaymentLedger).where(PaymentLedger.id == idem_record.result_id)
+                select(PaymentLedger).where(PaymentLedger.id == stored_result_id)
             )
             cached = cached_result.scalar_one_or_none()
-            if cached:
-                return cached
-        raise HTTPException(status_code=409, detail="Idempotency key already processed but result not found")
 
-    # PSP Simulation: PENDING -> SUCCESS or FAILED
-    status = "SUCCESS"
-    if request.payment_token == "tok_fail":
-        status = "FAILED"
+    decision = resolve_idempotency(
+        key_was_inserted=key_was_inserted,
+        stored_result_id=stored_result_id,
+        cached_result_found=cached is not None,
+    )
+
+    if decision.outcome is IdempotencyOutcome.RETURN_CACHED:
+        # Rule 4: the guard is a cache, not a gate. Replay, never error.
+        return cached
+
+    if decision.outcome is IdempotencyOutcome.RETRY_LATER:
+        # No committed result to replay: either the same key is still in
+        # flight, or its result row is gone. Proceeding would authorize the
+        # card a second time, so answer retryably instead. 409 is what the
+        # dispatcher already treats as "try again".
+        logger.warning(
+            f"Idempotent charge cannot complete yet: {decision.detail} "
+            f"(key={idempotency_key})"
+        )
+        raise HTTPException(status_code=409, detail=decision.detail)
+
+    # PSP outcome and the event it produces both live in charge_rules, where
+    # they are tested against order-saga's vocabulary.
+    status = authorize(request.payment_token)
 
     # Save Ledger entry
     payment_id = uuid.uuid4()
@@ -61,7 +84,7 @@ async def process_charge(db: AsyncSession, request: ChargeRequest, idempotency_k
     db.add(ledger_entry)
 
     # Create OutboxMessage
-    event_type = "PaymentCharged" if status == "SUCCESS" else "PaymentFailed"
+    event_type = event_for(status)
     
     payload = {
         "id": str(ledger_entry.id),

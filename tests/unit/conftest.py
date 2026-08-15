@@ -45,3 +45,8 @@ refund_rules = load_module(
     "refund_rules_under_test",
     "services/payment-service/app/services/refund_rules.py",
 )
+
+charge_rules = load_module(
+    "charge_rules_under_test",
+    "services/payment-service/app/services/charge_rules.py",
+)
