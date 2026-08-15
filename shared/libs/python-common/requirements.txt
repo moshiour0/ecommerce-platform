@@ -1,0 +1,5 @@
+confluent-kafka[avro]==2.3.0
+requests==2.31.0
+pydantic==2.3.0
+PyJWT==2.8.0
+cryptography==41.0.3

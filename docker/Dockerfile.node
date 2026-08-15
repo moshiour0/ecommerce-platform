@@ -1,0 +1,14 @@
+FROM node:18-alpine
+
+ARG SERVICE_PATH
+WORKDIR /app
+
+# Install dependencies
+COPY ${SERVICE_PATH}/package*.json ./
+RUN npm install --production
+
+# Copy the Node.js application code
+COPY ${SERVICE_PATH}/src ./src
+
+# The port is driven by the environment variable from docker-compose
+CMD ["npm", "start"]

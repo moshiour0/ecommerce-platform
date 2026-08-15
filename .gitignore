@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Secrets — never commit. .env.example is the tracked template.
+.env
+.env.local
+.env.*.local
+
+# Logs & local runtime state
+*.log
+saga.log
+tests/e2e/worker.log
+tests/e2e/worker_debug.log
+tests/e2e/.e2e_state.json
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

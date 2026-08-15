@@ -1,0 +1,20 @@
+FROM python:3.11-slim
+
+ARG SERVICE_PATH
+WORKDIR /app
+
+# Set PYTHONPATH so the container can find the shared python-common library
+ENV PYTHONPATH="/app/shared_libs"
+
+# Copy the shared library into the container
+COPY shared/libs/python-common /app/shared_libs/python_common
+
+# Install service-specific requirements
+COPY ${SERVICE_PATH}/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the actual microservice code
+COPY ${SERVICE_PATH}/app ./app
+
+# The command will be overridden by docker-compose to bind to the correct port
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0"]

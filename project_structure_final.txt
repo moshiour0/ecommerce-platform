@@ -1,0 +1,417 @@
+Folder PATH listing
+Volume serial number is 00000014 9A4E:E1A3
+C:.
+|   project_structure_final.txt
+|   
+\---ecommerce-platform
+    |   .env.example
+    |   docker-compose.override.yml
+    |   docker-compose.yml
+    |   init-dbs.sh
+    |   Makefile
+    |   README.md
+    |   
+    +---ci
+    |   +---.github
+    |   |   \---workflows
+    |   |           cd.yml
+    |   |           ci.yml
+    |   |           
+    |   \---scripts
+    +---infrastructure
+    |   +---k8s
+    |   |   +---backup
+    |   |   +---hpa
+    |   |   +---iam
+    |   |   +---istio
+    |   |   +---kafka
+    |   |   +---monitoring
+    |   |   +---services
+    |   |   |       api-gateway.yaml
+    |   |   |       audit-service.yaml
+    |   |   |       bff-checkout.yaml
+    |   |   |       bff-shop.yaml
+    |   |   |       cart-service.yaml
+    |   |   |       catalog-service.yaml
+    |   |   |       delivery-quote-service.yaml
+    |   |   |       fraud-service.yaml
+    |   |   |       fulfillment-service.yaml
+    |   |   |       inventory-service.yaml
+    |   |   |       media-service.yaml
+    |   |   |       notification-service.yaml
+    |   |   |       order-saga.yaml
+    |   |   |       payment-service.yaml
+    |   |   |       pricing-service.yaml
+    |   |   |       promotion-service.yaml
+    |   |   |       search-service.yaml
+    |   |   |       tax-service.yaml
+    |   |   |       user-service.yaml
+    |   |   |       websocket-gateway.yaml
+    |   |   |       
+    |   |   \---vault
+    |   \---terraform
+    +---platform
+    |   +---feature-flags
+    |   |   \---app
+    |   |       \---routes
+    |   +---monitoring
+    |   |   \---grafana
+    |   |       \---dashboards
+    |   +---otel-collector
+    |   +---schema-registry
+    |   |   \---schemas
+    |   \---vault-config
+    |       \---policies
+    |               audit-service.hcl
+    |               cart-service.hcl
+    |               catalog-service.hcl
+    |               delivery-quote-service.hcl
+    |               fraud-service.hcl
+    |               fulfillment-service.hcl
+    |               inventory-service.hcl
+    |               media-service.hcl
+    |               notification-service.hcl
+    |               order-saga.hcl
+    |               payment-service.hcl
+    |               pricing-service.hcl
+    |               promotion-service.hcl
+    |               search-service.hcl
+    |               tax-service.hcl
+    |               user-service.hcl
+    |               
+    +---services
+    |   +---api-gateway
+    |   |   |   Dockerfile
+    |   |   |   package.json
+    |   |   |   
+    |   |   \---src
+    |   |       |   index.js
+    |   |       |   
+    |   |       +---middleware
+    |   |       +---routes
+    |   |       \---utils
+    |   +---audit-service
+    |   |   |   alembic.ini
+    |   |   |   Dockerfile
+    |   |   |   requirements.txt
+    |   |   |   
+    |   |   +---alembic
+    |   |   |   |   env.py
+    |   |   |   |   
+    |   |   |   \---versions
+    |   |   \---app
+    |   |       |   main.py
+    |   |       |   __init__.py
+    |   |       |   
+    |   |       +---routes
+    |   |       \---services
+    |   +---bff-checkout
+    |   |   |   Dockerfile
+    |   |   |   package.json
+    |   |   |   
+    |   |   \---src
+    |   |       |   index.js
+    |   |       |   
+    |   |       +---middleware
+    |   |       +---routes
+    |   |       \---utils
+    |   +---bff-shop
+    |   |   |   Dockerfile
+    |   |   |   package.json
+    |   |   |   
+    |   |   \---src
+    |   |       |   index.js
+    |   |       |   
+    |   |       +---middleware
+    |   |       +---routes
+    |   |       \---utils
+    |   +---cart-service
+    |   |   |   alembic.ini
+    |   |   |   Dockerfile
+    |   |   |   requirements.txt
+    |   |   |   
+    |   |   +---alembic
+    |   |   |   |   env.py
+    |   |   |   |   
+    |   |   |   \---versions
+    |   |   \---app
+    |   |       |   main.py
+    |   |       |   __init__.py
+    |   |       |   
+    |   |       +---routes
+    |   |       \---services
+    |   +---catalog-service
+    |   |   |   alembic.ini
+    |   |   |   Dockerfile
+    |   |   |   requirements.txt
+    |   |   |   
+    |   |   +---alembic
+    |   |   |   |   env.py
+    |   |   |   |   
+    |   |   |   \---versions
+    |   |   \---app
+    |   |       |   main.py
+    |   |       |   __init__.py
+    |   |       |   
+    |   |       +---routes
+    |   |       \---services
+    |   +---delivery-quote-service
+    |   |   |   alembic.ini
+    |   |   |   Dockerfile
+    |   |   |   requirements.txt
+    |   |   |   
+    |   |   +---alembic
+    |   |   |   |   env.py
+    |   |   |   |   
+    |   |   |   \---versions
+    |   |   \---app
+    |   |       |   main.py
+    |   |       |   __init__.py
+    |   |       |   
+    |   |       +---routes
+    |   |       \---services
+    |   +---fraud-service
+    |   |   |   alembic.ini
+    |   |   |   Dockerfile
+    |   |   |   requirements.txt
+    |   |   |   
+    |   |   +---alembic
+    |   |   |   |   env.py
+    |   |   |   |   
+    |   |   |   \---versions
+    |   |   \---app
+    |   |       |   main.py
+    |   |       |   __init__.py
+    |   |       |   
+    |   |       +---routes
+    |   |       \---services
+    |   +---fulfillment-service
+    |   |   |   alembic.ini
+    |   |   |   Dockerfile
+    |   |   |   requirements.txt
+    |   |   |   
+    |   |   +---alembic
+    |   |   |   |   env.py
+    |   |   |   |   
+    |   |   |   \---versions
+    |   |   \---app
+    |   |       |   main.py
+    |   |       |   __init__.py
+    |   |       |   
+    |   |       +---routes
+    |   |       \---services
+    |   +---inventory-service
+    |   |   |   alembic.ini
+    |   |   |   Dockerfile
+    |   |   |   requirements.txt
+    |   |   |   
+    |   |   +---alembic
+    |   |   |   |   env.py
+    |   |   |   |   
+    |   |   |   \---versions
+    |   |   \---app
+    |   |       |   main.py
+    |   |       |   __init__.py
+    |   |       |   
+    |   |       +---routes
+    |   |       \---services
+    |   +---media-service
+    |   |   |   alembic.ini
+    |   |   |   Dockerfile
+    |   |   |   requirements.txt
+    |   |   |   
+    |   |   +---alembic
+    |   |   |   |   env.py
+    |   |   |   |   
+    |   |   |   \---versions
+    |   |   \---app
+    |   |       |   main.py
+    |   |       |   __init__.py
+    |   |       |   
+    |   |       +---routes
+    |   |       \---services
+    |   +---notification-service
+    |   |   |   alembic.ini
+    |   |   |   Dockerfile
+    |   |   |   requirements.txt
+    |   |   |   
+    |   |   +---alembic
+    |   |   |   |   env.py
+    |   |   |   |   
+    |   |   |   \---versions
+    |   |   \---app
+    |   |       |   main.py
+    |   |       |   __init__.py
+    |   |       |   
+    |   |       +---routes
+    |   |       \---services
+    |   +---order-saga
+    |   |   |   alembic.ini
+    |   |   |   Dockerfile
+    |   |   |   requirements.txt
+    |   |   |   
+    |   |   +---alembic
+    |   |   |   |   env.py
+    |   |   |   |   
+    |   |   |   \---versions
+    |   |   \---app
+    |   |       |   config.py
+    |   |       |   database.py
+    |   |       |   main.py
+    |   |       |   models.py
+    |   |       |   schemas.py
+    |   |       |   __init__.py
+    |   |       |   
+    |   |       +---routes
+    |   |       \---services
+    |   +---payment-service
+    |   |   |   alembic.ini
+    |   |   |   Dockerfile
+    |   |   |   requirements.txt
+    |   |   |   
+    |   |   +---alembic
+    |   |   |   |   env.py
+    |   |   |   |   
+    |   |   |   \---versions
+    |   |   \---app
+    |   |       |   main.py
+    |   |       |   __init__.py
+    |   |       |   
+    |   |       +---routes
+    |   |       \---services
+    |   +---pricing-service
+    |   |   |   alembic.ini
+    |   |   |   Dockerfile
+    |   |   |   requirements.txt
+    |   |   |   
+    |   |   +---alembic
+    |   |   |   |   env.py
+    |   |   |   |   
+    |   |   |   \---versions
+    |   |   \---app
+    |   |       |   main.py
+    |   |       |   __init__.py
+    |   |       |   
+    |   |       +---routes
+    |   |       \---services
+    |   +---promotion-service
+    |   |   |   alembic.ini
+    |   |   |   Dockerfile
+    |   |   |   requirements.txt
+    |   |   |   
+    |   |   +---alembic
+    |   |   |   |   env.py
+    |   |   |   |   
+    |   |   |   \---versions
+    |   |   \---app
+    |   |       |   main.py
+    |   |       |   __init__.py
+    |   |       |   
+    |   |       +---routes
+    |   |       \---services
+    |   +---search-service
+    |   |   |   alembic.ini
+    |   |   |   Dockerfile
+    |   |   |   requirements.txt
+    |   |   |   
+    |   |   +---alembic
+    |   |   |   |   env.py
+    |   |   |   |   
+    |   |   |   \---versions
+    |   |   \---app
+    |   |       |   main.py
+    |   |       |   __init__.py
+    |   |       |   
+    |   |       +---routes
+    |   |       \---services
+    |   +---tax-service
+    |   |   |   alembic.ini
+    |   |   |   Dockerfile
+    |   |   |   requirements.txt
+    |   |   |   
+    |   |   +---alembic
+    |   |   |   |   env.py
+    |   |   |   |   
+    |   |   |   \---versions
+    |   |   \---app
+    |   |       |   main.py
+    |   |       |   __init__.py
+    |   |       |   
+    |   |       +---routes
+    |   |       \---services
+    |   +---user-service
+    |   |   |   alembic.ini
+    |   |   |   Dockerfile
+    |   |   |   requirements.txt
+    |   |   |   
+    |   |   +---alembic
+    |   |   |   |   env.py
+    |   |   |   |   
+    |   |   |   \---versions
+    |   |   \---app
+    |   |       |   main.py
+    |   |       |   __init__.py
+    |   |       |   
+    |   |       +---routes
+    |   |       \---services
+    |   \---websocket-gateway
+    |       |   Dockerfile
+    |       |   package.json
+    |       |   
+    |       \---src
+    |           |   index.js
+    |           |   
+    |           +---middleware
+    |           +---routes
+    |           \---utils
+    +---shared
+    |   +---libs
+    |   |   +---node-common
+    |   |   \---python-common
+    |   |           auth.py
+    |   |           database.py
+    |   |           kafka_client.py
+    |   |           outbox.py
+    |   |           __init__.py
+    |   |           
+    |   +---proto
+    |   \---schemas
+    \---workers
+        +---cdc-outbox
+        |   |   Dockerfile
+        |   |   register-connectors.sh
+        |   |   
+        |   \---connectors
+        |           cart-outbox-connector.json
+        |           catalog-outbox-connector.json
+        |           fulfillment-outbox-connector.json
+        |           inventory-outbox-connector.json
+        |           notification-outbox-connector.json
+        |           order-outbox-connector.json
+        |           payment-outbox-connector.json
+        |           user-outbox-connector.json
+        |           
+        +---notification-worker
+        |   |   Dockerfile
+        |   |   requirements.txt
+        |   |   
+        |   +---processors
+        |   \---templates
+        +---reindex-worker
+        |   |   Dockerfile
+        |   |   requirements.txt
+        |   |   
+        |   +---indexers
+        |   \---sources
+        +---stream-processor
+        |   |   Dockerfile
+        |   |   requirements.txt
+        |   |   
+        |   +---consumers
+        |   \---indexers
+        \---webhook-handler
+            |   Dockerfile
+            |   requirements.txt
+            |   
+            +---processors
+            \---routes

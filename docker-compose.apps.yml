@@ -1,0 +1,305 @@
+x-python-service: &python-service
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.python
+  networks:
+    - mesh
+
+x-node-service: &node-service
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.node
+  networks:
+    - mesh
+
+services:
+  # ==========================================
+  # THE SHIELD (EDGE & BFFs)
+  # ==========================================
+  api-gateway:
+    <<: *node-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+      args:
+        SERVICE_PATH: services/api-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - BFF_SHOP_URL=http://bff-shop:8001
+      - BFF_CHECKOUT_URL=http://bff-checkout:8002
+      - JWT_SECRET=${JWT_SECRET:-vault-managed-jwt-secret-key-2026}
+
+  bff-shop:
+    <<: *node-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+      args:
+        SERVICE_PATH: services/bff-shop
+    ports:
+      - "8001:8001"
+    environment:
+      - PORT=8001
+      - CATALOG_SERVICE_URL=http://catalog-service:8005
+      - SEARCH_SERVICE_URL=http://search-service:8006
+      - CART_SERVICE_URL=http://cart-service:8007
+
+  bff-checkout:
+    <<: *node-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+      args:
+        SERVICE_PATH: services/bff-checkout
+    ports:
+      - "8002:8002"
+    environment:
+      - PORT=8002
+      - CART_SERVICE_URL=http://cart-service:8007
+      - CATALOG_SERVICE_URL=http://catalog-service:8005
+      - PRICING_SERVICE_URL=http://pricing-service:8008
+      - FRAUD_SERVICE_URL=http://fraud-service:8014
+      - DELIVERY_QUOTE_SERVICE_URL=http://delivery-quote-service:8011
+      - ORDER_SAGA_URL=http://order-saga:8012
+
+  websocket-gateway:
+    <<: *node-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+      args:
+        SERVICE_PATH: services/websocket-gateway
+    ports:
+      - "8003:8003"
+    environment:
+      - PORT=8003
+      - REDIS_URL=redis://redis:6379
+
+  # ==========================================
+  # PYTHON MICROSERVICES
+  # ==========================================
+  user-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/user-service
+    ports:
+      - "8004:8004"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/user_db
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8004" ]
+
+  catalog-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/catalog-service
+    ports:
+      - "8005:8005"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/catalog_db
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8005" ]
+
+  search-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/search-service
+    ports:
+      - "8006:8006"
+    environment:
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8006" ]
+
+  cart-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/cart-service
+    ports:
+      - "8007:8007"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/cart_db
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8007" ]
+
+  pricing-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/pricing-service
+    ports:
+      - "8008:8008"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/pricing_db
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8008" ]
+
+  promotion-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/promotion-service
+    ports:
+      - "8009:8009"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/promo_db
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8009" ]
+
+  tax-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/tax-service
+    ports:
+      - "8010:8010"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/tax_db
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010" ]
+
+  delivery-quote-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/delivery-quote-service
+    ports:
+      - "8011:8011"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/delivery_quote_db
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8011" ]
+
+  order-saga:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/order-saga
+    ports:
+      - "8012:8012"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/order_db
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8012" ]
+
+  inventory-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/inventory-service
+    ports:
+      - "8013:8013"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/inventory_db
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8013" ]
+
+  fraud-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/fraud-service
+    ports:
+      - "8014:8014"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/fraud_db
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8014" ]
+
+  payment-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/payment-service
+    ports:
+      - "8015:8015"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/payment_ledger_db
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8015" ]
+
+  fulfillment-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/fulfillment-service
+    ports:
+      - "8016:8016"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/fulfillment_db
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8016" ]
+
+  notification-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/notification-service
+    ports:
+      - "8017:8017"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/notification_db
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8017" ]
+
+  media-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/media-service
+    ports:
+      - "8018:8018"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/media_db
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8018" ]
+
+  audit-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/audit-service
+    ports:
+      - "8019:8019"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/audit_db
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8019" ]
+
+  stream-processor:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: workers/stream-processor
+    environment:
+      - PYTHONPATH=/app:/app/shared_libs
+    # Worker has no API ports to expose
+    command: [ "python", "-m", "app.main" ]
+networks:
+  mesh:
+    external: true
+    name: ecommerce-platform_mesh
