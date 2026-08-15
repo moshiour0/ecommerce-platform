@@ -1,7 +1,16 @@
+# Every service waits for Postgres to be *healthy*, not merely started. Plain
+# depends_on only waits for the container to exist, which is why a from-scratch
+# bring-up produced services that had already exited by the time their
+# dependency was usable. restart: unless-stopped is the backstop for races no
+# healthcheck expresses.
 x-python-service: &python-service
   build:
     context: .
     dockerfile: docker/Dockerfile.python
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
   networks:
     - mesh
 
@@ -9,6 +18,12 @@ x-node-service: &node-service
   build:
     context: .
     dockerfile: docker/Dockerfile.node
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
   networks:
     - mesh
 
@@ -300,6 +315,14 @@ services:
       dockerfile: docker/Dockerfile.python
       args:
         SERVICE_PATH: workers/stream-processor
+    # Consumes Kafka and writes Elasticsearch, so it needs both ready. It
+    # previously exited on a cold start with "Connection refused" to
+    # elasticsearch:9200 and, having no restart policy, stayed dead.
+    depends_on:
+      kafka:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
     environment:
       - PYTHONPATH=/app:/app/shared_libs
     # Worker has no API ports to expose

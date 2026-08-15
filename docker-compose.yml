@@ -1,11 +1,18 @@
-version: '3.8'
-
 services:
   # ==========================================
   # FOUNDATION: DATABASES & MESH
   # ==========================================
+  # Startup ordering note: plain `depends_on` only waits for a container to
+  # *start*, not to be ready. A from-scratch bring-up therefore raced —
+  # schema-registry exited because Kafka had no broker yet, and
+  # stream-processor exited because Elasticsearch was not listening. Neither
+  # had a restart policy, so both stayed dead and the platform came up broken.
+  # Infrastructure now declares healthchecks and dependants gate on
+  # `condition: service_healthy`, with `restart: unless-stopped` as a backstop
+  # for races no healthcheck can express.
   postgres:
     image: postgres:15-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-admin}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-supersecret}
@@ -27,38 +34,76 @@ services:
       - max_replication_slots=25
       - -c
       - max_wal_senders=25
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
     networks:
       - mesh
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     networks:
       - mesh
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.10.2
+    restart: unless-stopped
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
     ports:
       - "9200:9200"
+    # A single-node cluster never reaches green, so yellow is the healthy
+    # steady state and must be accepted or nothing depending on ES ever starts.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=1s' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
     networks:
       - mesh
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
+    restart: unless-stopped
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
+    # A `ruok` probe is the canonical ZooKeeper check but is unusable here:
+    # cp-zookeeper 7.x blocks four-letter commands unless whitelisted, and
+    # setting ZOOKEEPER_4LW_COMMANDS_WHITELIST does not take effect because the
+    # image's env-to-property translation mangles a name starting with a digit
+    # (verified: the variable is present in the container and ZooKeeper still
+    # answers "ruok is not executed because it is not in the whitelist").
+    # A port check is sufficient here because the real readiness gate is
+    # Kafka's own healthcheck, which verifies broker registration rather than
+    # port availability.
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 2181 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     networks:
       - mesh
 
   kafka:
     image: confluentinc/cp-kafka:7.4.0
+    restart: unless-stopped
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
       - "9092:9092"
     environment:
@@ -68,18 +113,35 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    # Broker registration, not port availability: schema-registry fails with
+    # "Expected 1 brokers but found only 0" when the port is open but the
+    # broker has not yet registered.
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:29092 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
     networks:
       - mesh
 
   schema-registry:
     image: confluentinc/cp-schema-registry:7.4.0
+    restart: unless-stopped
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     ports:
       - "8081:8081"
     environment:
       SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:29092
       SCHEMA_REGISTRY_HOST_NAME: schema-registry
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/subjects || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
     networks:
       - mesh
 
@@ -90,9 +152,14 @@ services:
     build:
       context: ./
       dockerfile: docker/Dockerfile.debezium
+    restart: unless-stopped
     depends_on:
-      - kafka
-      - postgres
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
     ports:
       - "8083:8083"
     environment:
@@ -111,6 +178,15 @@ services:
       CONNECT_INTERNAL_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
       CONNECT_REST_ADVERTISED_HOST_NAME: debezium
       CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components"
+    # The previous container reported "unhealthy" for an hour while working
+    # fine, because it had no healthcheck of its own and Docker inherited a
+    # meaningless default. The connector REST API is the real readiness signal.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
     networks:
       - mesh
 
