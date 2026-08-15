@@ -6,6 +6,8 @@ from pythonjsonlogger import jsonlogger
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from .routes import cart
 from .database import redis_client, engine
+from python_common.retention import start_outbox_cleanup
+from .database import engine
 
 # Setup structured JSON logging
 logger = logging.getLogger()
@@ -68,6 +70,8 @@ async def startup_event():
     global sweeper_task
     logger.info("Cart Service starting up")
     sweeper_task = asyncio.create_task(cart_sweeper_loop())
+    # Rule 5: prune acknowledged outbox rows older than 7 days.
+    app.state.outbox_cleanup = start_outbox_cleanup(engine)
 
 @app.on_event("shutdown")
 async def shutdown_event():

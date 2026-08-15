@@ -81,12 +81,17 @@ async def add_to_cart(db: AsyncSession, redis: Redis, user_id: str, request: Car
 async def checkout_cart(db: AsyncSession, redis: Redis, user_id: str, idempotency_key: str) -> dict:
     cart_key = f"cart:{user_id}"
     
-    # C-1 Fix: Acquire Redis lock to prevent double-checkout
+    # C-1 Fix: Acquire Redis lock to prevent double-checkout.
+    # The value is a per-request token, not a constant. With a constant, a slow
+    # Postgres commit could outlive the 10s TTL, a second request would acquire
+    # the lock, and this request's finally-block would delete a lock it no
+    # longer owns -- releasing mutual exclusion at exactly the wrong moment.
     lock_key = f"lock:checkout:{user_id}"
-    lock_acquired = await redis.set(lock_key, "1", nx=True, ex=10)
+    lock_token = str(uuid.uuid4())
+    lock_acquired = await redis.set(lock_key, lock_token, nx=True, ex=10)
     if not lock_acquired:
         raise HTTPException(status_code=409, detail="Checkout already in progress for this user")
-    
+
     try:
         # Check if cart exists in Redis
         existing_cart_data = await redis.get(cart_key)
@@ -136,8 +141,14 @@ async def checkout_cart(db: AsyncSession, redis: Redis, user_id: str, idempotenc
 
         return {"status": "Checkout initiated", "user_id": user_id}
     finally:
-        # Always release the lock
-        await redis.delete(lock_key)
+        # Compare-and-delete: only release the lock if we still hold it.
+        # DELETE and the ownership check must be atomic, so this runs as a
+        # Lua script rather than a GET followed by a DELETE.
+        await redis.eval(
+            "if redis.call('get', KEYS[1]) == ARGV[1] "
+            "then return redis.call('del', KEYS[1]) else return 0 end",
+            1, lock_key, lock_token
+        )
 
 async def get_cart(redis: Redis, user_id: str) -> CartResponse:
     cart_key = f"cart:{user_id}"
