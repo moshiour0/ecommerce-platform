@@ -1,6 +1,16 @@
 # ANTI-GRAVITY MASTER ROADMAP & CHECKPOINT STATE
 
-**CURRENT STATUS:** [PHASE 1 - Step 1.1]
+> **What `[X]` means here: scaffolded and designed — not verified working.**
+>
+> This file previously declared `CURRENT STATUS: [PHASE 1 - Step 1.1]` in its
+> header while every phase below was ticked `[X]`. Read as a status report it
+> said the platform was finished; it is not. Roughly half the service
+> directories contain substantive logic, every Kubernetes manifest is empty,
+> and the saga could not advance outside a test run.
+>
+> A phase is only complete when a test proves it. Until a phase has a passing
+> test, `[X]` here means "the files exist." Implementation truth lives in
+> `git log` and in the code.
 
 ## PHASE 1: Base Infrastructure Verification (The Concrete)
 - [X] 1.1: Verify Docker-Compose spin-up (Postgres, Redis, Kafka, Zookeeper, Elastic).
