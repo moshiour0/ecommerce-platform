@@ -45,8 +45,13 @@ def fail(msg):
 
 
 def load_all():
+    """dev-infra/ is deliberately excluded: it exists only so a local cluster
+    has something to point at, and by design has no compose counterpart in the
+    generated set."""
     docs = []
     for p in sorted(K8S.rglob("*.yaml")):
+        if "dev-infra" in p.parts:
+            continue
         for d in yaml.safe_load_all(p.read_text(encoding="utf-8")):
             if d:
                 docs.append((p, d))
@@ -135,6 +140,8 @@ def main():
 
     # 4. no plaintext credentials, anywhere
     for p in sorted(K8S.rglob("*.yaml")):
+        if "dev-infra" in p.parts:
+            continue
         text = p.read_text(encoding="utf-8")
         for i, line in enumerate(text.splitlines(), 1):
             if line.strip().startswith("#"):

@@ -13,4 +13,16 @@
 --   done
 --
 -- Idempotent: safe to re-run.
+--
+-- The CREATE is not redundant. Under compose this file always ran after
+-- bootstrap_schema.py's create_all phase, so the table already existed. On a
+-- fresh Kubernetes cluster there is no create_all before the migration Job,
+-- and the bare ALTER failed with 'relation "idempotency_keys" does not exist',
+-- taking the whole Job down on its first statement. A migration must be able
+-- to run against an empty database.
+CREATE TABLE IF NOT EXISTS public.idempotency_keys (
+    key        character varying(255) NOT NULL PRIMARY KEY,
+    created_at timestamp with time zone
+);
+
 ALTER TABLE idempotency_keys ADD COLUMN IF NOT EXISTS result_id UUID;

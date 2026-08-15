@@ -20,6 +20,17 @@
 --
 -- Idempotent.
 
+-- Created here as well as altered: on a fresh cluster there is no create_all
+-- before the migration Job, so a bare ALTER fails on an empty database.
+CREATE TABLE IF NOT EXISTS public.outbox_messages (
+    id             uuid                   NOT NULL PRIMARY KEY,
+    aggregate_type character varying(255) NOT NULL,
+    aggregate_id   character varying(255) NOT NULL,
+    type           character varying(255) NOT NULL,
+    payload        jsonb                  NOT NULL,
+    created_at     timestamp with time zone
+);
+
 ALTER TABLE public.outbox_messages
     ADD COLUMN IF NOT EXISTS processed_at timestamp with time zone;
 

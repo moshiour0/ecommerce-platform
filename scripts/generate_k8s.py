@@ -164,6 +164,45 @@ def deployment(name: str, svc: dict, port: int | None) -> dict:
         container["readinessProbe"] = readiness
         container["livenessProbe"] = liveness
 
+    # Rule 10 permits an InitContainer for schema work, and one is required
+    # here. Under compose, bootstrap_schema.py runs create_all against every
+    # service before the SQL migrations. Kubernetes had no equivalent, so a
+    # fresh cluster had no service tables at all -- order_saga_states,
+    # inventory_items, payment_ledger and the rest simply did not exist, and
+    # the migration Job died on its first ALTER against an empty database.
+    #
+    # This runs the service's own models in the service's own image, so the
+    # DDL cannot drift from the code. It is idempotent (create_all issues
+    # CREATE TABLE IF NOT EXISTS) and does not run in the application startup
+    # path: the app container starts only after it exits 0.
+    # Keyed off the code actually being there, not off DATABASE_URL. audit-service
+    # and media-service declare a DATABASE_URL but are stubs with no app/database.py
+    # or app/models.py, so an init container crashed on ModuleNotFoundError and
+    # held the pod in Init:Error forever.
+    src = REPO / "services" / name / "app"
+    has_orm = (src / "database.py").exists() and (src / "models.py").exists()
+
+    init_containers = []
+    if has_orm and any(e["name"] == "DATABASE_URL" for e in container["env"]):
+        init_containers.append({
+            "name": "schema-init",
+            "image": container["image"],
+            "imagePullPolicy": "IfNotPresent",
+            "command": ["python", "-c",
+                        "import asyncio\n"
+                        "from app.database import engine, Base\n"
+                        "import app.models\n"
+                        "async def m():\n"
+                        "    async with engine.begin() as c:\n"
+                        "        await c.run_sync(Base.metadata.create_all)\n"
+                        "asyncio.run(m())\n"
+                        "print('schema ready')\n"],
+            "env": container["env"],
+            "resources": {"requests": {"cpu": "50m", "memory": "128Mi"},
+                          "limits": {"cpu": "500m", "memory": "256Mi"}},
+            "securityContext": container["securityContext"],
+        })
+
     return {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -184,6 +223,7 @@ def deployment(name: str, svc: dict, port: int | None) -> dict:
             "template": {
                 "metadata": {"labels": {"app": name, "tier": "worker" if is_worker else "service"}},
                 "spec": {
+                    **({"initContainers": init_containers} if init_containers else {}),
                     "containers": [container],
                     "securityContext": {"fsGroup": 1000},
                     # Give in-flight checkout requests time to finish.

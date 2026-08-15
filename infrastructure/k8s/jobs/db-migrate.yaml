@@ -8,39 +8,20 @@ metadata:
   name: db-migrations
   namespace: ecommerce
 data:
-  001_add_idempotency_result_id.sql: '-- 001: add idempotency_keys.result_id
-
-    --
-
-    -- The S-1 remediation added result_id to every IdempotencyKey model but no
-
-    -- migration was authored, and SQLAlchemy''s create_all() never alters an
-
-    -- existing table. Every code path that reads result_id therefore raised
-
-    -- UndefinedColumnError, so all state-mutating endpoints in these five
-
-    -- services returned HTTP 500.
-
-    --
-
-    -- Rule 10: migrations run as a Job/InitContainer, never in the app startup
-
-    -- path. Apply with:
-
-    --   for db in order_db inventory_db payment_ledger_db fraud_db cart_db; do
-
-    --     psql -U admin -d $db -f migrations/001_add_idempotency_result_id.sql
-
-    --   done
-
-    --
-
-    -- Idempotent: safe to re-run.
-
-    ALTER TABLE idempotency_keys ADD COLUMN IF NOT EXISTS result_id UUID;
-
-    '
+  001_add_idempotency_result_id.sql: "-- 001: add idempotency_keys.result_id\n--\n-- The S-1 remediation\
+    \ added result_id to every IdempotencyKey model but no\n-- migration was authored, and SQLAlchemy's\
+    \ create_all() never alters an\n-- existing table. Every code path that reads result_id therefore\
+    \ raised\n-- UndefinedColumnError, so all state-mutating endpoints in these five\n-- services returned\
+    \ HTTP 500.\n--\n-- Rule 10: migrations run as a Job/InitContainer, never in the app startup\n-- path.\
+    \ Apply with:\n--   for db in order_db inventory_db payment_ledger_db fraud_db cart_db; do\n--   \
+    \  psql -U admin -d $db -f migrations/001_add_idempotency_result_id.sql\n--   done\n--\n-- Idempotent:\
+    \ safe to re-run.\n--\n-- The CREATE is not redundant. Under compose this file always ran after\n\
+    -- bootstrap_schema.py's create_all phase, so the table already existed. On a\n-- fresh Kubernetes\
+    \ cluster there is no create_all before the migration Job,\n-- and the bare ALTER failed with 'relation\
+    \ \"idempotency_keys\" does not exist',\n-- taking the whole Job down on its first statement. A migration\
+    \ must be able\n-- to run against an empty database.\nCREATE TABLE IF NOT EXISTS public.idempotency_keys\
+    \ (\n    key        character varying(255) NOT NULL PRIMARY KEY,\n    created_at timestamp with time\
+    \ zone\n);\n\nALTER TABLE idempotency_keys ADD COLUMN IF NOT EXISTS result_id UUID;\n"
   002_cart_db_create_cart_state.sql: "-- 002 (cart_db only): create cart_state\n--\n-- The C-1/C-4 checkout-mutex\
     \ work added a CartState model, but no service\n-- calls Base.metadata.create_all() and no Alembic\
     \ migration was ever authored\n-- (16 alembic/ scaffolds, zero versions/). The table never reached\
@@ -105,16 +86,21 @@ data:
     --    transaction as their business logic, so redelivery is a no-op. It was\n--    mandated but never\
     \ defined and therefore never built.\n--\n-- Rule 10: run as a Job or InitContainer, never in the\
     \ app startup path.\n--   psql -U admin -d order_db -f migrations/005_dispatcher_processed_state.sql\n\
-    --\n-- Idempotent.\n\nALTER TABLE public.outbox_messages\n    ADD COLUMN IF NOT EXISTS processed_at\
-    \ timestamp with time zone;\n\n-- The dispatcher claims work with\n--   WHERE type LIKE '%Command'\
-    \ AND processed_at IS NULL ... FOR UPDATE SKIP LOCKED\n-- so a partial index keeps the claim query\
-    \ cheap as the outbox grows.\nCREATE INDEX IF NOT EXISTS ix_outbox_unprocessed_commands\n    ON public.outbox_messages\
-    \ (created_at)\n    WHERE processed_at IS NULL;\n\nCREATE TABLE IF NOT EXISTS public.processed_events\
-    \ (\n    event_id     uuid                     NOT NULL,\n    consumer     text                  \
-    \   NOT NULL,\n    event_type   text                     NOT NULL,\n    processed_at timestamp with\
-    \ time zone NOT NULL DEFAULT NOW(),\n    PRIMARY KEY (event_id, consumer)\n);\n\n-- Composite key,\
-    \ not event_id alone: two different consumers may legitimately\n-- process the same event, and each\
-    \ needs its own record of having done so.\nCREATE INDEX IF NOT EXISTS ix_processed_events_processed_at\n\
+    --\n-- Idempotent.\n\n-- Created here as well as altered: on a fresh cluster there is no create_all\n\
+    -- before the migration Job, so a bare ALTER fails on an empty database.\nCREATE TABLE IF NOT EXISTS\
+    \ public.outbox_messages (\n    id             uuid                   NOT NULL PRIMARY KEY,\n    aggregate_type\
+    \ character varying(255) NOT NULL,\n    aggregate_id   character varying(255) NOT NULL,\n    type\
+    \           character varying(255) NOT NULL,\n    payload        jsonb                  NOT NULL,\n\
+    \    created_at     timestamp with time zone\n);\n\nALTER TABLE public.outbox_messages\n    ADD COLUMN\
+    \ IF NOT EXISTS processed_at timestamp with time zone;\n\n-- The dispatcher claims work with\n-- \
+    \  WHERE type LIKE '%Command' AND processed_at IS NULL ... FOR UPDATE SKIP LOCKED\n-- so a partial\
+    \ index keeps the claim query cheap as the outbox grows.\nCREATE INDEX IF NOT EXISTS ix_outbox_unprocessed_commands\n\
+    \    ON public.outbox_messages (created_at)\n    WHERE processed_at IS NULL;\n\nCREATE TABLE IF NOT\
+    \ EXISTS public.processed_events (\n    event_id     uuid                     NOT NULL,\n    consumer\
+    \     text                     NOT NULL,\n    event_type   text                     NOT NULL,\n  \
+    \  processed_at timestamp with time zone NOT NULL DEFAULT NOW(),\n    PRIMARY KEY (event_id, consumer)\n\
+    );\n\n-- Composite key, not event_id alone: two different consumers may legitimately\n-- process the\
+    \ same event, and each needs its own record of having done so.\nCREATE INDEX IF NOT EXISTS ix_processed_events_processed_at\n\
     \    ON public.processed_events (processed_at);\n"
   006_dispatcher_claim_lease.sql: "-- 006 (order_db): claim lease for the saga dispatcher\n--\n-- The\
     \ first dispatcher held a Postgres transaction open for the whole batch:\n-- it selected rows FOR\
