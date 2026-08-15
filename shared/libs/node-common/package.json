@@ -4,6 +4,12 @@
   "description": "Shared resilience primitives for the Node services",
   "main": "index.js",
   "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.47.1",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.52.1",
+    "@opentelemetry/resources": "^1.25.1",
+    "@opentelemetry/sdk-node": "^0.52.1",
+    "@opentelemetry/semantic-conventions": "^1.25.1",
     "axios": "^1.5.0",
     "opossum": "^8.1.3"
   }
