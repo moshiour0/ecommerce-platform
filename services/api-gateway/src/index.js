@@ -3,7 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const logger = require('./utils/logger');
-const limiter = require('./middleware/ratelimit');
+const { tieredRateLimiter, redisReady } = require('./middleware/ratelimit');
 const verifyToken = require('./middleware/auth');
 
 const app = express();
@@ -15,8 +15,12 @@ const BFF_CHECKOUT_URL = process.env.BFF_CHECKOUT_URL || 'http://bff-checkout:80
 // 1. Basic Middleware
 app.use(cors());
 
-// 2. Global Rate Limiting
-app.use(limiter);
+// 2. Global Rate Limiting (Redis-backed, shared across replicas)
+// ORDERING: this runs before verifyToken so unauthenticated floods are capped
+// before they reach JWT verification. Consequence: req.user is not yet set, so
+// the admin tier keys on IP rather than user id. Moving per-user admin limiting
+// after auth requires a second limiter mounted on /api — tracked separately.
+app.use(tieredRateLimiter);
 
 // 3. Request Logging
 app.use((req, res, next) => {
@@ -76,6 +80,16 @@ app.use((req, res) => {
   res.status(404).json({ detail: 'Not Found' });
 });
 
-app.listen(PORT, () => {
-  logger.info(`API Gateway listening on port ${PORT}`);
-});
+// Do not accept traffic until the shared rate-limit store is reachable.
+// Serving requests with an unreachable limiter store would either 500 every
+// request or, worse, invite a silent memory fallback.
+redisReady
+  .then(() => {
+    app.listen(PORT, () => {
+      logger.info(`API Gateway listening on port ${PORT}`);
+    });
+  })
+  .catch((err) => {
+    logger.error(`API Gateway failed to start: ${err.message}`);
+    process.exit(1);
+  });

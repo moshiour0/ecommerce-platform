@@ -29,7 +29,12 @@ services:
       - PORT=8000
       - BFF_SHOP_URL=http://bff-shop:8001
       - BFF_CHECKOUT_URL=http://bff-checkout:8002
-      - JWT_SECRET=${JWT_SECRET:-vault-managed-jwt-secret-key-2026}
+      # Rule 8: no hardcoded secret fallbacks. `:?` makes compose refuse to
+      # start when JWT_SECRET is unset, rather than substituting a default
+      # that is committed to the repository and identical in every deployment.
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in .env (see .env.example)}
+      # Shared store for the tiered rate limiter (Rule: api-gateway boundary).
+      - REDIS_URL=redis://redis:6379
 
   bff-shop:
     <<: *node-service
