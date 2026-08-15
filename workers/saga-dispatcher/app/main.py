@@ -48,6 +48,9 @@ from python_common.resilience import (
     CircuitOpenError,
 )
 from python_common.tracing import get_tracer, setup_tracing, start_consumer_span
+from .dispatch_rules import (
+    SagaAck, classify_saga_response, route_for, settles,
+)
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -187,23 +190,26 @@ async def _advance_saga(order_id: str, event_type: str, idem_key: str,
     """
     res = await _post("order-saga", f"{SAGA_URL}/{order_id}/events",
                       {"event_type": event_type, "payload": payload or {}}, idem_key)
-    if res.status_code < 300:
+
+    # The status semantics live in dispatch_rules so they can be tested without
+    # a saga to answer. Settling is the consequential half: a deferred or
+    # errored command must stay claimable, a dead-lettered one must not.
+    ack = classify_saga_response(res.status_code)
+    if ack is SagaAck.APPLIED:
         _stats["advanced"] += 1
         logger.info(f"Saga advanced: order={order_id} event={event_type}")
-        return True
-    if res.status_code == 409:
+    elif ack is SagaAck.DEFERRED:
         _stats["deferred"] += 1
         logger.warning(f"Out-of-order, will retry: order={order_id} event={event_type}")
-        return False
-    if res.status_code == 422:
+    elif ack is SagaAck.DEAD_LETTERED:
         _stats["dead_lettered"] += 1
         logger.error(f"Non-retryable event, dead-lettering: order={order_id} "
                      f"event={event_type} detail={res.text[:200]}")
-        return True
-    _stats["errors"] += 1
-    logger.error(f"Saga rejected event: order={order_id} event={event_type} "
-                 f"status={res.status_code}")
-    return False
+    else:
+        _stats["errors"] += 1
+        logger.error(f"Saga rejected event: order={order_id} event={event_type} "
+                     f"status={res.status_code}")
+    return settles(ack)
 
 
 async def handle(msg_id, msg_type: str, payload: dict) -> bool:

@@ -9,30 +9,25 @@ weeks.
 Run:  python -m pytest tests/unit -q
 """
 
-import sys
-from pathlib import Path
-
 import pytest
 
-# The service is not an installed package; add its root so `app.` resolves.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "services" / "order-saga"))
+from conftest import saga_transitions
 
-from app.services.transitions import (  # noqa: E402
-    ALL_STATES,
-    COMPENSATING_STATES,
-    KNOWN_EVENT_TYPES,
-    TERMINAL_STATES,
-    TRANSITIONS,
-    Outcome,
-    resolve,
-    PENDING,
-    INVENTORY_RESERVED,
-    PAID,
-    ORDER_COMPLETED,
-    FAILED,
-    TIMED_OUT,
-    ROLLBACK_COMPLETED,
-)
+ALL_STATES = saga_transitions.ALL_STATES
+COMPENSATING_STATES = saga_transitions.COMPENSATING_STATES
+KNOWN_EVENT_TYPES = saga_transitions.KNOWN_EVENT_TYPES
+TERMINAL_STATES = saga_transitions.TERMINAL_STATES
+TRANSITIONS = saga_transitions.TRANSITIONS
+Outcome = saga_transitions.Outcome
+resolve = saga_transitions.resolve
+PENDING = saga_transitions.PENDING
+INVENTORY_RESERVED = saga_transitions.INVENTORY_RESERVED
+PAID = saga_transitions.PAID
+ORDER_COMPLETED = saga_transitions.ORDER_COMPLETED
+FAILED = saga_transitions.FAILED
+TIMED_OUT = saga_transitions.TIMED_OUT
+ROLLBACK_COMPLETED = saga_transitions.ROLLBACK_COMPLETED
+
 
 
 # ---------------------------------------------------------------------------
