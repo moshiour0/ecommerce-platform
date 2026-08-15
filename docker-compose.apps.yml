@@ -304,6 +304,28 @@ services:
       - PYTHONPATH=/app:/app/shared_libs
     # Worker has no API ports to expose
     command: [ "python", "-m", "app.main" ]
+
+  # Closes the saga command/event loop (Architecture section 3b). Until this
+  # existed the only implementation lived in tests/e2e/, so the state machine
+  # could not advance outside a test run.
+  saga-dispatcher:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: workers/saga-dispatcher
+    ports:
+      # Workers occupy 8030-8039 and expose health/metrics only (Rule 2).
+      - "8030:8030"
+    environment:
+      - PYTHONPATH=/app:/app/shared_libs
+      - ORDER_DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/order_db
+      - SAGA_URL=http://order-saga:8012/orders
+      - INVENTORY_URL=http://inventory-service:8013/inventory
+      - PAYMENT_URL=http://payment-service:8015/payments
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8030" ]
+
 networks:
   mesh:
     external: true

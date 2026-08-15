@@ -19,13 +19,11 @@ async def main():
     print(" INITIATING AUTONOMOUS EDGE-TO-SAGA CHECKOUT TEST")
     print("==================================================")
     
-    # Start saga worker in background
-    import subprocess
-    print("-> Starting saga orchestrator worker...")
-    import os
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
-    worker_proc = subprocess.Popen([sys.executable, "saga_orchestrator_worker.py"], env=env)
+    # The saga-dispatcher worker (workers/saga-dispatcher, port 8030) now
+    # drives the state machine in the running stack. Spawning a second
+    # orchestrator here would double-claim commands, because the old
+    # prototype filtered only on type and ignored processed_at.
+    print("-> Using the running saga-dispatcher (workers/saga-dispatcher)")
     
     try:
         # --- STEP 0: SEED THE CATALOG & PRICING ---
@@ -178,9 +176,7 @@ async def main():
             except httpx.RequestError as e:
                 print(f"   [!] Connection failed: {e}")
     finally:
-        print("-> Stopping saga orchestrator worker...")
-        worker_proc.terminate()
-        worker_proc.wait()
+        print("-> Done (dispatcher keeps running as a platform service)")
 
 if __name__ == "__main__":
     asyncio.run(main())
