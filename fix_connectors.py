@@ -1,8 +1,22 @@
+import os
+import sys
 import requests
 import time
 import json
 
-DEBEZIUM_URL = "http://localhost:8083/connectors"
+# Overridable so the same script provisions a cluster (via port-forward) and
+# a compose stack without editing code.
+DEBEZIUM_URL = os.getenv("DEBEZIUM_URL", "http://localhost:8083/connectors")
+
+# Rule 8: never hardcode the credential. The compose default is kept only as a
+# development fallback; the Kubernetes Postgres uses a generated password from
+# the Secret, and every connector failed with "password authentication failed
+# for user admin" while this was a literal.
+PG_USER = os.getenv("POSTGRES_USER", "admin")
+PG_PASSWORD = os.getenv("POSTGRES_PASSWORD", "supersecret")
+PG_HOST = os.getenv("POSTGRES_HOST", "postgres")
+
+failures = []
 
 # Maps the real database name (as created by init-dbs.sh) to the service slug
 # used for the connector name, topic prefix and replication slot.
@@ -50,10 +64,10 @@ def provision_connectors():
         config = {
             "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
             "tasks.max": "1",
-            "database.hostname": "postgres",
+            "database.hostname": PG_HOST,
             "database.port": "5432",
-            "database.user": "admin",
-            "database.password": "supersecret",
+            "database.user": PG_USER,
+            "database.password": PG_PASSWORD,
             "database.dbname": db,
             "topic.prefix": f"{service_name}_server",
             "plugin.name": "pgoutput",
@@ -91,8 +105,10 @@ def provision_connectors():
                 print(f"  [+] SUCCESS: Connector updated.")
             else:
                 print(f"  [!] FAILED to update: {put_res.text}")
+                failures.append(connector_name)
         else:
             print(f"  [!] FAILED to create: {res.text}")
+            failures.append(connector_name)
 
 if __name__ == "__main__":
     print("==================================================")
@@ -101,5 +117,15 @@ if __name__ == "__main__":
     wait_for_debezium()
     provision_connectors()
     print("\n==================================================")
+    # This previously printed unconditionally. It reported "ALL CONNECTORS
+    # SYNCHRONIZED SUCCESSFULLY" after all fifteen failed authentication --
+    # the same defect init_schemas.py had, and the reason a broken CDC layer
+    # looked healthy for so long.
+    if failures:
+        print(f" FAILED — {len(failures)} connector(s) not provisioned:")
+        for f in failures:
+            print(f"   - {f}")
+        print("==================================================")
+        sys.exit(1)
     print(" ALL CONNECTORS SYNCHRONIZED SUCCESSFULLY.")
     print("==================================================")
