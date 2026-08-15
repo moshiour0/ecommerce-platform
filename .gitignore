@@ -27,3 +27,6 @@ tests/e2e/.e2e_state.json
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local database dumps — never commit
+backups/
