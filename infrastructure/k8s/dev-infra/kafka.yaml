@@ -1,0 +1,360 @@
+# DEV-ONLY Kafka event mesh for a local cluster.
+#
+# NOT for production. Single broker, replication factor 1, emptyDir storage
+# (implicit -- no volumes at all, so every restart loses every topic and
+# offset). A real cluster uses Strimzi or a managed Kafka with at least three
+# brokers, persistent volumes, and TLS.
+#
+# Present so the CDC layer can actually be exercised: without Kafka the
+# outbox rows are written but never published, and stream-processor has
+# nothing to consume.
+#
+# Addresses match the compose setup exactly (kafka:29092, schema-registry:8081,
+# debezium:8083), so no application config changes when moving between them.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zookeeper
+  namespace: ecommerce
+  labels:
+    app: zookeeper
+    tier: infra
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: zookeeper
+  template:
+    metadata:
+      labels:
+        app: zookeeper
+        tier: infra
+    spec:
+      # Kubernetes injects a KAFKA_PORT / SCHEMA_REGISTRY_PORT style variable
+      # into every pod for every Service in the namespace. The Confluent images
+      # build their server.properties FROM those same prefixes, so the Service
+      # named 'kafka' set port=tcp://10.96.57.247:29092 on the broker itself and
+      # it died on startup with only "port is deprecated" in the log. Service
+      # links are unnecessary here -- everything resolves by DNS.
+      enableServiceLinks: false
+      containers:
+      - name: zookeeper
+        image: confluentinc/cp-zookeeper:7.4.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 2181
+        resources:
+          requests:
+            cpu: 100m
+            memory: 192Mi
+          limits:
+            cpu: 500m
+            memory: 384Mi
+        env:
+        - name: ZOOKEEPER_CLIENT_PORT
+          value: '2181'
+        - name: ZOOKEEPER_TICK_TIME
+          value: '2000'
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - nc -z localhost 2181
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 30
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zookeeper
+  namespace: ecommerce
+  labels:
+    app: zookeeper
+spec:
+  type: ClusterIP
+  selector:
+    app: zookeeper
+  ports:
+  - name: client
+    port: 2181
+    targetPort: 2181
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka
+  namespace: ecommerce
+  labels:
+    app: kafka
+    tier: infra
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+        tier: infra
+    spec:
+      # Kubernetes injects a KAFKA_PORT / SCHEMA_REGISTRY_PORT style variable
+      # into every pod for every Service in the namespace. The Confluent images
+      # build their server.properties FROM those same prefixes, so the Service
+      # named 'kafka' set port=tcp://10.96.57.247:29092 on the broker itself and
+      # it died on startup with only "port is deprecated" in the log. Service
+      # links are unnecessary here -- everything resolves by DNS.
+      enableServiceLinks: false
+      containers:
+      - name: kafka
+        image: confluentinc/cp-kafka:7.4.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 29092
+        resources:
+          requests:
+            cpu: 100m
+            memory: 640Mi
+          limits:
+            cpu: 1000m
+            memory: 1280Mi
+        env:
+        - name: KAFKA_BROKER_ID
+          value: '1'
+        - name: KAFKA_ZOOKEEPER_CONNECT
+          value: zookeeper:2181
+        - name: KAFKA_ADVERTISED_LISTENERS
+          value: PLAINTEXT://kafka:29092
+        - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+          value: PLAINTEXT:PLAINTEXT
+        - name: KAFKA_INTER_BROKER_LISTENER_NAME
+          value: PLAINTEXT
+        - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+          value: '1'
+        - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+          value: '1'
+        - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+          value: '1'
+        - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
+          value: '0'
+        - name: KAFKA_HEAP_OPTS
+          value: -Xmx512M -Xms512M
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - timeout 5 bash -c "</dev/tcp/localhost/29092"
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: ecommerce
+  labels:
+    app: kafka
+spec:
+  type: ClusterIP
+  # A Kafka broker connects to ITSELF at its advertised address. Kubernetes
+  # excludes not-Ready pods from Service endpoints, so kafka:29092 resolved to
+  # nothing while the broker was starting, the controller failed with
+  # "Failed to connect within 30000 ms", readiness never passed, and the
+  # endpoint never appeared -- a deadlock that only exists in Kubernetes.
+  publishNotReadyAddresses: true
+  selector:
+    app: kafka
+  ports:
+  - name: broker
+    port: 29092
+    targetPort: 29092
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: schema-registry
+  namespace: ecommerce
+  labels:
+    app: schema-registry
+    tier: infra
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: schema-registry
+  template:
+    metadata:
+      labels:
+        app: schema-registry
+        tier: infra
+    spec:
+      # Kubernetes injects a KAFKA_PORT / SCHEMA_REGISTRY_PORT style variable
+      # into every pod for every Service in the namespace. The Confluent images
+      # build their server.properties FROM those same prefixes, so the Service
+      # named 'kafka' set port=tcp://10.96.57.247:29092 on the broker itself and
+      # it died on startup with only "port is deprecated" in the log. Service
+      # links are unnecessary here -- everything resolves by DNS.
+      enableServiceLinks: false
+      containers:
+      - name: schema-registry
+        image: confluentinc/cp-schema-registry:7.4.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8081
+        resources:
+          requests:
+            cpu: 100m
+            memory: 320Mi
+          limits:
+            cpu: 500m
+            memory: 640Mi
+        env:
+        - name: SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS
+          value: kafka:29092
+        - name: SCHEMA_REGISTRY_HOST_NAME
+          value: schema-registry
+        - name: SCHEMA_REGISTRY_LISTENERS
+          value: http://0.0.0.0:8081
+        - name: SCHEMA_REGISTRY_HEAP_OPTS
+          value: -Xmx256M
+        readinessProbe:
+          httpGet:
+            path: /subjects
+            port: 8081
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: schema-registry
+  namespace: ecommerce
+  labels:
+    app: schema-registry
+spec:
+  type: ClusterIP
+  selector:
+    app: schema-registry
+  ports:
+  - name: http
+    port: 8081
+    targetPort: 8081
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: debezium
+  namespace: ecommerce
+  labels:
+    app: debezium
+    tier: infra
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: debezium
+  template:
+    metadata:
+      labels:
+        app: debezium
+        tier: infra
+    spec:
+      # Kubernetes injects a KAFKA_PORT / SCHEMA_REGISTRY_PORT style variable
+      # into every pod for every Service in the namespace. The Confluent images
+      # build their server.properties FROM those same prefixes, so the Service
+      # named 'kafka' set port=tcp://10.96.57.247:29092 on the broker itself and
+      # it died on startup with only "port is deprecated" in the log. Service
+      # links are unnecessary here -- everything resolves by DNS.
+      enableServiceLinks: false
+      containers:
+      - name: debezium
+        image: ecommerce-platform-debezium:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8083
+        resources:
+          requests:
+            cpu: 100m
+            memory: 640Mi
+          limits:
+            cpu: 1000m
+            memory: 1280Mi
+        env:
+        - name: CONNECT_BOOTSTRAP_SERVERS
+          value: kafka:29092
+        - name: CONNECT_GROUP_ID
+          value: '1'
+        - name: CONNECT_CONFIG_STORAGE_TOPIC
+          value: my_connect_configs
+        - name: CONNECT_OFFSET_STORAGE_TOPIC
+          value: my_connect_offsets
+        - name: CONNECT_STATUS_STORAGE_TOPIC
+          value: my_connect_statuses
+        - name: CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR
+          value: '1'
+        - name: CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR
+          value: '1'
+        - name: CONNECT_STATUS_STORAGE_REPLICATION_FACTOR
+          value: '1'
+        - name: CONNECT_KEY_CONVERTER
+          value: org.apache.kafka.connect.storage.StringConverter
+        - name: CONNECT_VALUE_CONVERTER
+          value: io.confluent.connect.avro.AvroConverter
+        - name: CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL
+          value: http://schema-registry:8081
+        - name: CONNECT_INTERNAL_KEY_CONVERTER
+          value: org.apache.kafka.connect.json.JsonConverter
+        - name: CONNECT_INTERNAL_VALUE_CONVERTER
+          value: org.apache.kafka.connect.json.JsonConverter
+        - name: CONNECT_REST_ADVERTISED_HOST_NAME
+          value: debezium
+        - name: CONNECT_PLUGIN_PATH
+          value: /usr/share/java,/usr/share/confluent-hub-components
+        - name: KAFKA_HEAP_OPTS
+          value: -Xmx512M
+        readinessProbe:
+          httpGet:
+            path: /connectors
+            port: 8083
+          initialDelaySeconds: 60
+          periodSeconds: 15
+          failureThreshold: 40
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: debezium
+  namespace: ecommerce
+  labels:
+    app: debezium
+spec:
+  type: ClusterIP
+  selector:
+    app: debezium
+  ports:
+  - name: rest
+    port: 8083
+    targetPort: 8083

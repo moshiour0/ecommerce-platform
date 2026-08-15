@@ -38,6 +38,8 @@ metadata:
     tier: infra
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: postgres
@@ -129,6 +131,8 @@ metadata:
     tier: infra
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: redis
@@ -186,6 +190,8 @@ metadata:
     tier: infra
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: jaeger
