@@ -1,36 +1,42 @@
-const axios = require('axios');
+const { createResilientClient } = require('node-common');
+const logger = require('../utils/logger');
 
+// Rule 11: every synchronous inter-service call is wrapped in a circuit
+// breaker (open after 5 consecutive failures, 30s open, single half-open
+// probe) and a bulkhead. Breakers are attached here at the client factory
+// rather than at each call site, so a new route cannot accidentally bypass
+// one. Routes keep using `catalogClient.get(...)` exactly as before.
 const TIMEOUT_MS = 3000;
 
-const cartClient = axios.create({
-  baseURL: process.env.CART_SERVICE_URL || 'http://cart-service:8007',
-  timeout: TIMEOUT_MS
-});
+const client = (name, baseURL, bulkhead) =>
+  createResilientClient({ name, baseURL, timeout: TIMEOUT_MS, bulkhead, logger });
 
-const catalogClient = axios.create({
-  baseURL: process.env.CATALOG_SERVICE_URL || 'http://catalog-service:8005',
-  timeout: TIMEOUT_MS
-});
+const cartClient = client(
+  'cart-service', process.env.CART_SERVICE_URL || 'http://cart-service:8007', 20);
 
-const pricingClient = axios.create({
-  baseURL: process.env.PRICING_SERVICE_URL || 'http://pricing-service:8008',
-  timeout: TIMEOUT_MS
-});
+// Checkout validates every line item against catalog and pricing (Rule 7),
+// so these two see the highest fan-out and get a larger bulkhead.
+const catalogClient = client(
+  'catalog-service', process.env.CATALOG_SERVICE_URL || 'http://catalog-service:8005', 40);
 
-const fraudClient = axios.create({
-  baseURL: process.env.FRAUD_SERVICE_URL || 'http://fraud-service:8014',
-  timeout: TIMEOUT_MS
-});
+const pricingClient = client(
+  'pricing-service', process.env.PRICING_SERVICE_URL || 'http://pricing-service:8008', 40);
 
-const deliveryQuoteClient = axios.create({
-  baseURL: process.env.DELIVERY_QUOTE_SERVICE_URL || 'http://delivery-quote-service:8011',
-  timeout: TIMEOUT_MS
-});
+const fraudClient = client(
+  'fraud-service', process.env.FRAUD_SERVICE_URL || 'http://fraud-service:8014', 20);
 
-const orderSagaClient = axios.create({
-  baseURL: process.env.ORDER_SAGA_URL || 'http://order-saga:8012',
-  timeout: TIMEOUT_MS
-});
+const deliveryQuoteClient = client(
+  'delivery-quote-service', process.env.DELIVERY_QUOTE_SERVICE_URL || 'http://delivery-quote-service:8011', 20);
+
+// The saga is the write path. A smaller bulkhead here means a stalled saga
+// cannot consume the whole pool and take the read-only quote paths with it.
+const orderSagaClient = client(
+  'order-saga', process.env.ORDER_SAGA_URL || 'http://order-saga:8012', 10);
+
+const allClients = [
+  cartClient, catalogClient, pricingClient,
+  fraudClient, deliveryQuoteClient, orderSagaClient
+];
 
 module.exports = {
   cartClient,
@@ -38,5 +44,7 @@ module.exports = {
   pricingClient,
   fraudClient,
   deliveryQuoteClient,
-  orderSagaClient
+  orderSagaClient,
+  // Surfaced on /health so operators can see which dependencies are tripped.
+  breakerStates: () => allClients.map(c => c.stats())
 };

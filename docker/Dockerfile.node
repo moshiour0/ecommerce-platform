@@ -7,6 +7,12 @@ WORKDIR /app
 COPY ${SERVICE_PATH}/package*.json ./
 RUN npm install --production
 
+# Drop the shared Node library into node_modules so services can
+# `require('node-common')`. Mirrors how Dockerfile.python puts
+# shared/libs/python-common on PYTHONPATH. Its own dependencies (axios,
+# opossum) are declared by each consuming service and installed above.
+COPY shared/libs/node-common /app/node_modules/node-common
+
 # Copy the Node.js application code
 COPY ${SERVICE_PATH}/src ./src
 
