@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ecommerce
+  labels:
+    name: ecommerce
+    # Rule 8 (zero trust): the mesh injects mTLS sidecars per namespace.
+    istio-injection: enabled
+---
+# Rule 8: deny all traffic by default, then allow only what the architecture
+# declares. Without this every pod can reach every other pod, and "strict
+# network isolation" is a sentence in a document rather than a property of the
+# cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: ecommerce
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# Services accept traffic from inside the namespace. Narrowing this to the
+# specific caller of each service is the next step; it needs the BFF/saga
+# boundary from Rule 7 encoded per workload rather than one blanket rule.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-namespace-internal
+  namespace: ecommerce
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ecommerce
