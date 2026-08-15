@@ -6,24 +6,33 @@ from sqlalchemy.future import select
 from fastapi import HTTPException
 from ..models import OrderSagaState, OutboxMessage, IdempotencyKey
 from ..schemas import CreateOrderRequest, SagaEventRequest
+from .transitions import Outcome, resolve
 
 logger = logging.getLogger(__name__)
 
-# Event types this state machine understands. An event outside this set can
-# never become valid, so it is non-retryable and belongs in the DLQ.
-KNOWN_EVENT_TYPES = {
-    "InventoryReserved",
-    "InventoryReservationFailed",
-    "PaymentCharged",
-    "PaymentFailed",
-    "PaymentRefunded",
-    "OrderCompleted",
-    "InventoryReleased",
-}
 
-# States from which no further transition is possible. A known event arriving
-# here is a late duplicate, not an error — ack it so the consumer can commit.
-TERMINAL_STATES = {"ORDER_COMPLETED", "ROLLBACK_COMPLETED"}
+def _command_payload(command: str, saga_state) -> dict:
+    """Payloads stay here because they read the saga row; the decision does not.
+
+    Every command carries order_id: without it the dispatcher cannot map a
+    downstream result back to a saga, and correlation degrades to caller memory.
+    """
+    base = {"order_id": str(saga_state.id)}
+    if command == "ChargePaymentCommand":
+        return {**base,
+                "user_id": str(saga_state.user_id),
+                "amount_cents": saga_state.total_cents}
+    if command == "OrderFailed":
+        return {**base,
+                "user_id": str(saga_state.user_id),
+                "reason": "InventoryReservationFailed"}
+    return base
+
+# KNOWN_EVENT_TYPES and TERMINAL_STATES used to be defined here as well as in
+# transitions.py. Two copies of the same vocabulary is how a state machine ends
+# up disagreeing with itself, so they now live in exactly one place and this
+# module reads them through resolve().
+
 
 async def _check_idempotency_or_return_cached(db: AsyncSession, idempotency_key: str, model_class):
     """
@@ -116,81 +125,29 @@ async def advance_saga(db: AsyncSession, order_id: str, request: SagaEventReques
     if not saga_state:
         raise HTTPException(status_code=404, detail="Order Saga not found")
 
-    outbox_message = None
+    # The transition table lives in transitions.py as pure data so it can be
+    # tested exhaustively without a database. This function keeps persistence,
+    # locking and payload construction; it no longer decides.
+    #
+    # Capture the status as a plain string BEFORE any rollback. db.rollback()
+    # expires every object in the session, so reading saga_state.status
+    # afterwards triggers a lazy reload outside the async context and raises
+    # MissingGreenlet -- the endpoint then answered 500 on both the
+    # out-of-order and late-duplicate paths. 500 tells a consumer to retry,
+    # which is the exact opposite of what a late duplicate needs, and it would
+    # have retried a terminal saga forever.
+    current_status = str(saga_state.status)
+    decision = resolve(current_status, request.event_type)
 
-    # Handle transitions
-    if request.event_type == "InventoryReserved" and saga_state.status == "PENDING":
-        saga_state.status = "INVENTORY_RESERVED"
-        outbox_message = OutboxMessage(
-            aggregate_type="OrderSaga",
-            aggregate_id=str(saga_state.id),
-            type="ChargePaymentCommand",
-            payload={
-                "order_id": str(saga_state.id),
-                "user_id": str(saga_state.user_id),
-                "amount_cents": saga_state.total_cents
-            }
-        )
-    elif request.event_type == "PaymentCharged" and saga_state.status == "INVENTORY_RESERVED":
-        saga_state.status = "PAID"
-        outbox_message = OutboxMessage(
-            aggregate_type="OrderSaga",
-            aggregate_id=str(saga_state.id),
-            type="ConfirmOrderCommand",
-            payload={
-                "order_id": str(saga_state.id)
-            }
-        )
-    elif request.event_type == "PaymentFailed" and saga_state.status == "INVENTORY_RESERVED":
-        saga_state.status = "FAILED"
-        outbox_message = OutboxMessage(
-            aggregate_type="OrderSaga",
-            aggregate_id=str(saga_state.id),
-            type="ReleaseInventoryCommand",
-            payload={
-                "order_id": str(saga_state.id)
-            }
-        )
-    elif request.event_type == "InventoryReservationFailed" and saga_state.status == "PENDING":
-        # Out-of-stock is a business outcome, not an exception. Before this arm
-        # existed, inventory raised HTTP 400 and emitted nothing, so every
-        # oversubscribed saga in a flash sale hung at PENDING until the reaper
-        # swept it 15 minutes later. Nothing was reserved, so there is nothing
-        # to compensate — this is terminal.
-        saga_state.status = "ROLLBACK_COMPLETED"
-        outbox_message = OutboxMessage(
-            aggregate_type="OrderSaga",
-            aggregate_id=str(saga_state.id),
-            type="OrderFailed",
-            payload={
-                "order_id": str(saga_state.id),
-                "user_id": str(saga_state.user_id),
-                "reason": "InventoryReservationFailed"
-            }
-        )
-    elif request.event_type == "PaymentRefunded" and saga_state.status in ("PAID", "TIMED_OUT"):
-        # Completes the compensation loop opened by RefundPaymentCommand.
-        saga_state.status = "ROLLBACK_COMPLETED"
-    elif request.event_type == "OrderCompleted" and saga_state.status == "PAID":
-        saga_state.status = "ORDER_COMPLETED"
-    elif request.event_type == "InventoryReleased" and saga_state.status in ("FAILED", "TIMED_OUT"):
-        # TIMED_OUT is reached via the reaper, which emits ReleaseInventoryCommand.
-        # Without this arm the resulting ack had no transition and the saga could
-        # never reach ROLLBACK_COMPLETED, making "released" and "leaked" identical.
-        saga_state.status = "ROLLBACK_COMPLETED"
-    else:
-        # S-3 (real fix): the previous version logged, then fell through to
-        # commit — burning the idempotency key and acking the event. Any
-        # out-of-order delivery was destroyed permanently, because redelivery
-        # then hit the idempotency cache and returned stale state.
-        #
+    if decision.outcome is not Outcome.APPLY:
         # Nothing may be committed on a non-transition. Roll back so the
-        # idempotency key insert is undone and a retry is still possible.
+        # idempotency key insert is undone and a retry is still possible; the
+        # previous version logged and then committed, which burned the key and
+        # destroyed every out-of-order delivery permanently.
         await db.rollback()
 
-        if request.event_type not in KNOWN_EVENT_TYPES:
+        if decision.outcome is Outcome.UNKNOWN_EVENT:
             # Never valid at any state — do not make the consumer retry forever.
-            # Non-2xx and non-retryable: the consumer routes this to dlq.<topic>.
             logger.error(
                 f"Unknown saga event type={request.event_type} for order={order_id}. "
                 f"Non-retryable; route to DLQ."
@@ -200,29 +157,43 @@ async def advance_saga(db: AsyncSession, order_id: str, request: SagaEventReques
                 detail=f"Unknown event type '{request.event_type}' — not retryable"
             )
 
-        if saga_state.status in TERMINAL_STATES:
-            # Late duplicate of an event we already applied. Safe no-op: return
-            # current state with 200 so the consumer commits its offset.
+        if decision.outcome is Outcome.LATE_DUPLICATE:
+            # Already applied and terminal. Ack with 200 so the consumer
+            # commits its offset instead of redelivering forever.
+            #
+            # The instance is expired by the rollback above, so it must be
+            # reloaded inside async context before FastAPI serializes it.
             logger.info(
                 f"Late duplicate event={request.event_type} at terminal "
-                f"state={saga_state.status} for order={order_id}. Acking as no-op."
+                f"state={current_status} for order={order_id}. Acking as no-op."
             )
+            await db.refresh(saga_state)
             return saga_state
 
-        # Known event, non-terminal state, but not valid *yet* — almost always
-        # out-of-order delivery (e.g. PaymentCharged before InventoryReserved
-        # was applied). Retryable: 409 tells the consumer to redeliver rather
-        # than commit the offset.
+        # Valid event, not applicable yet — almost always out-of-order delivery
+        # (PaymentCharged before InventoryReserved was applied). 409 tells the
+        # consumer to redeliver rather than commit the offset.
         logger.warning(
-            f"Out-of-order saga event={request.event_type} at state={saga_state.status} "
+            f"Out-of-order saga event={request.event_type} at state={current_status} "
             f"for order={order_id}. Retryable — offset must not be committed."
         )
         raise HTTPException(
             status_code=409,
             detail=(
                 f"Event '{request.event_type}' not applicable at state "
-                f"'{saga_state.status}' — retry after the saga advances"
+                f"'{current_status}' — retry after the saga advances"
             )
+        )
+
+    saga_state.status = decision.new_status
+
+    outbox_message = None
+    if decision.command:
+        outbox_message = OutboxMessage(
+            aggregate_type="OrderSaga",
+            aggregate_id=str(saga_state.id),
+            type=decision.command,
+            payload=_command_payload(decision.command, saga_state),
         )
 
     if outbox_message:

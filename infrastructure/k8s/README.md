@@ -67,6 +67,38 @@ Stated explicitly so nobody assumes coverage that is not there.
   workload.
 - **PodDisruptionBudgets, anti-affinity, topology spread.** All single-replica.
 
+## Redeploying a locally rebuilt image
+
+**`docker build` alone does not update a running pod, and the failure is
+silent.** The manifests use `imagePullPolicy: IfNotPresent` with the mutable
+tag `latest`. Kubernetes resolves that tag to a digest on first pull and then
+never re-resolves it, so a rebuilt `latest` is ignored — `kubectl rollout
+restart` cheerfully restarts the pod on the *old* image and reports success.
+
+This cost real debugging time: a fix was verified as "not working" three times
+against a cluster that had never received it. The pod did not even contain the
+new source file.
+
+Rebuild and redeploy with a unique tag:
+
+```bash
+TAG="fix-$(date +%H%M%S)"
+docker compose -f docker-compose.yml -f docker-compose.apps.yml build order-saga
+docker tag ecommerce-platform-order-saga:latest ecommerce-platform-order-saga:$TAG
+docker save ecommerce-platform-order-saga:$TAG | \
+  docker exec -i desktop-control-plane ctr -n k8s.io images import -
+kubectl -n ecommerce set image deployment/order-saga order-saga=ecommerce-platform-order-saga:$TAG
+```
+
+Then confirm the code actually landed, rather than trusting the rollout:
+
+```bash
+POD=$(kubectl -n ecommerce get pod -l app=order-saga -o jsonpath='{.items[0].metadata.name}')
+kubectl -n ecommerce exec $POD -c order-saga -- ls /app/app/services/
+```
+
+A registry removes this entirely; immutable tags are the real fix.
+
 ## Verification status
 
 `scripts/validate_k8s.py` checks coverage against compose, port agreement
