@@ -29,9 +29,20 @@ outbox_cleanup_task = None
 
 async def saga_reaper_loop():
     """
-    S-2 Fix: Saga Staleness & Timeout Policy.
-    Sagas stuck in PENDING or INVENTORY_RESERVED for >15 minutes are swept.
-    Compensating events are emitted via outbox in the same transaction.
+    Saga Staleness & Timeout Policy.
+
+    Sagas stuck in PENDING, INVENTORY_RESERVED or PAID for >15 minutes are
+    swept and their compensations emitted via outbox in the same transaction.
+
+    PAID was previously not swept at all. A saga that reached PAID and never
+    received OrderCompleted stayed there forever: the card was charged, the
+    order never confirmed, and nothing alerted. That is the money-loss hole.
+
+    INVENTORY_RESERVED emits BOTH a release and a refund. At that state we
+    cannot tell whether payment succeeded with a lost ack (the classic
+    partition case), so we compensate both legs. This requires
+    RefundPaymentCommand to be a safe no-op when no charge exists —
+    idempotent blind compensation is the standard saga contract.
     """
     logger.info("Starting Saga Reaper background task (interval: 60s, timeout: 15min)")
     while True:
@@ -41,30 +52,47 @@ async def saga_reaper_loop():
                     WITH timed_out AS (
                         UPDATE order_saga_states
                         SET status = 'TIMED_OUT', updated_at = NOW()
-                        WHERE status IN ('PENDING', 'INVENTORY_RESERVED')
+                        WHERE status IN ('PENDING', 'INVENTORY_RESERVED', 'PAID')
                           AND updated_at < NOW() - INTERVAL '15 minutes'
                         RETURNING id, user_id, status
+                    ),
+                    commands AS (
+                        SELECT t.id, t.user_id, t.status, c.cmd
+                        FROM timed_out t
+                        CROSS JOIN LATERAL (
+                            SELECT unnest(
+                                CASE t.status
+                                    WHEN 'PENDING' THEN
+                                        ARRAY['SagaTimedOut']
+                                    WHEN 'INVENTORY_RESERVED' THEN
+                                        ARRAY['ReleaseInventoryCommand', 'RefundPaymentCommand']
+                                    WHEN 'PAID' THEN
+                                        ARRAY['RefundPaymentCommand']
+                                END
+                            ) AS cmd
+                        ) c
                     )
                     INSERT INTO outbox_messages (aggregate_type, aggregate_id, type, payload)
-                    SELECT 
-                        'OrderSaga', 
-                        id::text, 
-                        CASE 
-                            WHEN status = 'INVENTORY_RESERVED' THEN 'ReleaseInventoryCommand'
-                            ELSE 'SagaTimedOut'
-                        END,
+                    SELECT
+                        'OrderSaga',
+                        id::text,
+                        cmd,
                         json_build_object(
                             'order_id', id::text,
                             'user_id', user_id::text,
                             'previous_status', status,
                             'reason', 'Saga timeout after 15 minutes'
                         )
-                    FROM timed_out
-                    RETURNING aggregate_id;
+                    FROM commands
+                    RETURNING aggregate_id, type;
                 """))
-                timed_out_ids = result.fetchall()
-                if timed_out_ids:
-                    logger.warning(f"Saga Reaper timed out {len(timed_out_ids)} stuck sagas: {[r[0] for r in timed_out_ids]}")
+                emitted = result.fetchall()
+                if emitted:
+                    summary = ", ".join(f"{r[0]}:{r[1]}" for r in emitted)
+                    logger.warning(
+                        f"Saga Reaper swept stuck sagas, emitted {len(emitted)} "
+                        f"compensating command(s): {summary}"
+                    )
         except Exception as e:
             logger.error(f"Saga Reaper encountered an error: {e}")
         await asyncio.sleep(60)

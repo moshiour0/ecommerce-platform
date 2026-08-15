@@ -60,11 +60,22 @@ async def process_outbox():
                         print(f"  -> Inventory API: {res.status_code}")
                         
                         if res.status_code == 200:
-                            await client.post(f"{SAGA_API_URL}/{order_id}/events", 
-                                        json={"event_type": "InventoryReserved", "payload": {}}, 
+                            await client.post(f"{SAGA_API_URL}/{order_id}/events",
+                                        json={"event_type": "InventoryReserved", "payload": {}},
                                         headers={"Idempotency-Key": f"inv-res-{msg_id}"})
                             print("  -> Saga State Advanced: INVENTORY_RESERVED")
-                            
+                        else:
+                            # Without this branch a rejected reservation was dropped
+                            # entirely: the saga was never notified and sat at PENDING
+                            # until the reaper swept it 15 minutes later. In a flash
+                            # sale that is every oversubscribed order.
+                            await client.post(f"{SAGA_API_URL}/{order_id}/events",
+                                        json={"event_type": "InventoryReservationFailed",
+                                              "payload": {"reason": "InsufficientStock",
+                                                          "status_code": res.status_code}},
+                                        headers={"Idempotency-Key": f"inv-fail-{msg_id}"})
+                            print(f"  -> Saga State Reversed: INVENTORY_RESERVATION_FAILED ({res.status_code})")
+
                     elif msg_type == "ChargePaymentCommand":
                         if CHAOS_MODE:
                             print("  -> [CHAOS] Simulating Credit Card Decline (402 Payment Required)")

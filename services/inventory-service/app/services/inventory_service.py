@@ -42,7 +42,44 @@ async def reserve_inventory(db: AsyncSession, request: ReserveRequest, idempoten
         raise HTTPException(status_code=404, detail="Inventory item not found for this product")
 
     if inventory_item.quantity_available < request.quantity:
-        raise HTTPException(status_code=400, detail="Insufficient stock")
+        # Out-of-stock is a business outcome, not a transport error. Previously
+        # this raised before writing anything, so the saga was never told and
+        # hung at PENDING until the 15-minute reaper. Emit the rejection as a
+        # durable event (Rule 3: outbox before Kafka) in the same transaction,
+        # then signal the caller with 409 so it can advance the saga.
+        rejection = OutboxMessage(
+            aggregate_type="Inventory",
+            aggregate_id=str(inventory_item.product_id),
+            type="InventoryReservationFailed",
+            payload={
+                "id": str(inventory_item.id),
+                "product_id": str(inventory_item.product_id),
+                "quantity_requested": request.quantity,
+                "quantity_available": inventory_item.quantity_available,
+                "reason": "InsufficientStock",
+                "occurred_at": datetime.now(timezone.utc).isoformat()
+            }
+        )
+        db.add(rejection)
+
+        # Bind the key to this item so a retry replays the same rejection
+        # instead of falling into the "processed but no result" 409 path.
+        idem_result = await db.execute(
+            select(IdempotencyKey).where(IdempotencyKey.key == idempotency_key)
+        )
+        idem_record = idem_result.scalar_one()
+        idem_record.result_id = inventory_item.id
+
+        try:
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            raise HTTPException(status_code=500, detail=str(e))
+
+        raise HTTPException(
+            status_code=409,
+            detail="Insufficient stock — InventoryReservationFailed emitted"
+        )
 
     # Update quantities
     inventory_item.quantity_available -= request.quantity
