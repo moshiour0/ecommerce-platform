@@ -14,6 +14,7 @@ import sys
 DB_URL = os.getenv("DATABASE_URL", "postgresql://admin:supersecret@localhost:5432/order_db")
 INVENTORY_URL = "http://localhost:8013/inventory/reserve"
 PAYMENT_URL = "http://localhost:8015/payments/charge"
+REFUND_URL = "http://localhost:8015/payments/refund"
 SAGA_API_URL = "http://localhost:8012/orders"
 
 # ==========================================
@@ -104,6 +105,26 @@ async def process_outbox():
                                     json={"event_type": "InventoryReleased", "payload": {}}, 
                                     headers={"Idempotency-Key": f"inv-rel-{msg_id}"})
                         print("  -> Saga State Advanced: ROLLBACK_COMPLETED")
+
+                    elif msg_type == "RefundPaymentCommand":
+                        # Compensating leg for a charge. Emitted by the reaper when a
+                        # saga times out at PAID, or at INVENTORY_RESERVED where it is
+                        # unknowable whether the charge landed before the ack dropped.
+                        # payment-service treats an uncharged order as a no-op, so this
+                        # is safe to issue unconditionally.
+                        refund_payload = {
+                            "order_id": order_id,
+                            "user_id": payload.get("user_id"),
+                            "reason": payload.get("reason", "SagaCompensation")
+                        }
+                        res = await client.post(REFUND_URL, json=refund_payload, headers=headers)
+                        print(f"  -> Refund API: {res.status_code} {res.text[:120]}")
+
+                        if res.status_code == 200:
+                            await client.post(f"{SAGA_API_URL}/{order_id}/events",
+                                        json={"event_type": "PaymentRefunded", "payload": {}},
+                                        headers={"Idempotency-Key": f"pay-ref-{msg_id}"})
+                            print("  -> Saga State Advanced: ROLLBACK_COMPLETED")
 
                     elif msg_type == "ConfirmOrderCommand":
                         # The Final Happy Path
