@@ -14,7 +14,19 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init-dbs.sh:/docker-entrypoint-initdb.d/init-dbs.sh
-    command: [ "postgres", "-c", "wal_level=logical" ]
+    # One Debezium connector per service database (Rule 1 + Rule 3) means one
+    # logical replication slot per database. Postgres defaults to 10 slots and
+    # 10 WAL senders; the platform has 15 outbox-bearing databases, so five
+    # connectors failed with "all replication slots are in use" and their
+    # services' events never reached Kafka. Headroom left for future services.
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=25
+      - -c
+      - max_wal_senders=25
     networks:
       - mesh
 

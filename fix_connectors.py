@@ -4,13 +4,32 @@ import json
 
 DEBEZIUM_URL = "http://localhost:8083/connectors"
 
-# This list matches every single service database in your architecture
-DATABASES = [
-    "catalog_db", "pricing_db", "inventory_db", "cart_db",
-    "order_db", "payment_db", "fraud_db", "fulfillment_db",
-    "notification_db", "user_db", "tax_db", "delivery_quote_db",
-    "promotion_db", "audit_db", "media_db"
-]
+# Maps the real database name (as created by init-dbs.sh) to the service slug
+# used for the connector name, topic prefix and replication slot.
+#
+# Three entries were previously wrong -- payment_db, promotion_db and media_db
+# do not exist. Those connectors were provisioned against non-existent
+# databases, or fell back to a config posted from the on-disk JSON that has no
+# slot.name and therefore collided on the default "debezium" slot.
+# Deriving the slug by stripping "_db" is what produced the mismatch, so the
+# mapping is now explicit.
+DATABASES = {
+    "catalog_db":        "catalog",
+    "pricing_db":        "pricing",
+    "inventory_db":      "inventory",
+    "cart_db":           "cart",
+    "order_db":          "order",
+    "payment_ledger_db": "payment",
+    "fraud_db":          "fraud",
+    "fulfillment_db":    "fulfillment",
+    "notification_db":   "notification",
+    "user_db":           "user",
+    "tax_db":            "tax",
+    "delivery_quote_db": "delivery_quote",
+    "promo_db":          "promotion",
+    "audit_db":          "audit",
+    "media_meta_db":     "media",
+}
 
 def wait_for_debezium():
     print("Waiting for Debezium to accept connections...")
@@ -25,9 +44,7 @@ def wait_for_debezium():
         time.sleep(2)
 
 def provision_connectors():
-    for db in DATABASES:
-        # e.g., "catalog_db" -> "catalog"
-        service_name = db.replace("_db", "")
+    for db, service_name in DATABASES.items():
         connector_name = f"{service_name}-outbox-connector"
         
         config = {
