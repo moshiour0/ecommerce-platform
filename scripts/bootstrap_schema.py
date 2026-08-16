@@ -106,7 +106,16 @@ def psql(db, sql=None, file=None):
 
 
 def phase_models():
+    """Run create_all in each present service. Returns the databases it covered.
+
+    The returned set is what makes a partial bring-up verifiable. CI boots a
+    five-container slice rather than the whole platform, so most services are
+    legitimately absent, and asserting tables that only their models create
+    would fail a run that is in fact correct. With the full stack up every
+    service is present and the set is complete, so nothing changes there.
+    """
     print("PHASE 1 — model DDL (create_all inside each service container)")
+    live_dbs = set()
     for service, db in SERVICES.items():
         container = f"ecommerce-platform-{service}-1"
         if run(["docker", "inspect", "-f", "{{.State.Status}}", container]).returncode != 0:
@@ -125,11 +134,13 @@ def phase_models():
                    "asyncio.run(m())\n"])
         if res.returncode == 0:
             print(f"  OK    {service:<24} -> {db}")
+            live_dbs.add(db)
         else:
             tail = (res.stderr or res.stdout).strip().splitlines()[-1:] or ["unknown error"]
             print(f"  FAIL  {service:<24} -> {db}: {tail[0][:120]}")
             failures.append(f"model DDL {service}")
     print()
+    return live_dbs
 
 
 def phase_migrations():
@@ -160,8 +171,16 @@ def phase_migrations():
     print()
 
 
-def verify():
-    """Assert the things the platform actually breaks without."""
+def verify(live_dbs):
+    """Assert the things the platform actually breaks without.
+
+    Only for databases whose owning service actually ran its model DDL. A check
+    against a database nobody brought up proves nothing: order_saga_states is
+    created by order-saga's models, so with order-saga absent its absence is
+    the correct outcome, not a fault. Skipping is announced rather than silent,
+    because a verification phase that quietly checks less than it appears to is
+    how init_schemas.py used to report success over a broken schema.
+    """
     print("PHASE 3 — verification")
     checks = [
         ("order_db", "SELECT 1 FROM information_schema.columns "
@@ -184,7 +203,11 @@ def verify():
         ("inventory_db", "SELECT 1 FROM information_schema.tables "
                          "WHERE table_name='inventory_items'", "inventory_items"),
     ]
+    owner = {db: service for service, db in SERVICES.items()}
     for db, sql, label in checks:
+        if db not in live_dbs:
+            print(f"  SKIP  {db}.{label} ({owner.get(db, 'owner')} not running)")
+            continue
         res = run(PSQL + ["-d", db, "-t", "-A", "-c", sql])
         if res.stdout.strip() == "1":
             print(f"  OK    {db}.{label}")
@@ -199,9 +222,9 @@ if __name__ == "__main__":
     print(" SCHEMA BOOTSTRAP")
     print("=" * 62 + "\n")
     wait_for_postgres()
-    phase_models()
+    live_dbs = phase_models()
     phase_migrations()
-    verify()
+    verify(live_dbs)
 
     if failures:
         print(f"BOOTSTRAP FAILED — {len(failures)} problem(s):")
