@@ -90,3 +90,8 @@ dlq_rules = load_module(
     "dlq_rules_under_test",
     "workers/dlq-reprocessor/app/dlq_rules.py",
 )
+
+reindex_rules = load_module(
+    "reindex_rules_under_test",
+    "workers/reindex-worker/app/reindex_rules.py",
+)

@@ -401,6 +401,33 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8030" ]
 
+  reindex-worker:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: workers/reindex-worker
+    # Reads catalog and writes Elasticsearch, so it needs both.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    ports:
+      # Workers occupy 8030-8039 and expose health/metrics only (Rule 2).
+      - "8033:8033"
+    environment:
+      - PYTHONPATH=/app:/app/shared_libs
+      - CATALOG_DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/catalog_db
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      # 0 means one pass at startup, then idle. A periodic full reindex is a
+      # blunt instrument; re-running is a restart or a Job.
+      - REINDEX_INTERVAL_SECONDS=${REINDEX_INTERVAL_SECONDS:-0}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_SERVICE_NAME=reindex-worker
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8033" ]
+
   dlq-reprocessor:
     <<: *python-service
     build:

@@ -67,7 +67,7 @@ INFRA = {"postgres", "redis", "kafka", "zookeeper", "elasticsearch",
          "schema-registry", "jaeger", "debezium"}
 
 WORKERS = {"saga-dispatcher", "stream-processor", "webhook-handler",
-           "notification-worker", "dlq-reprocessor"}
+           "notification-worker", "dlq-reprocessor", "reindex-worker"}
 
 # Rough sizing. Deliberately explicit: a pod with no requests is unschedulable
 # in a constrained cluster and a pod with no limits can starve its neighbours.
