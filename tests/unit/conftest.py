@@ -65,3 +65,8 @@ cart_cache_rules = load_module(
     "cart_cache_rules_under_test",
     "services/cart-service/app/services/cart_cache_rules.py",
 )
+
+media_rules = load_module(
+    "media_rules_under_test",
+    "services/media-service/app/services/media_rules.py",
+)

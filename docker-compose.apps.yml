@@ -334,7 +334,12 @@ services:
     ports:
       - "8018:8018"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/media_db
+      # media_meta_db, not media_db. init-dbs.sh creates the former and nothing
+      # creates the latter, so this pointed at a database that has never
+      # existed. It went unnoticed because the service only served /health and
+      # never opened a connection. bootstrap_schema.py and migration 004 had it
+      # right all along.
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/media_meta_db
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8018" ]
 

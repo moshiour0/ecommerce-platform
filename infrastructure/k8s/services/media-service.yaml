@@ -26,18 +26,24 @@ spec:
         app: media-service
         tier: service
     spec:
-      containers:
-      - name: media-service
+      initContainers:
+      - name: schema-init
         image: ecommerce-platform-media-service:latest
         imagePullPolicy: IfNotPresent
-        env:
+        command:
+        - python
+        - -c
+        - "import asyncio\nfrom app.database import engine, Base\nimport app.models\nasync def m():\n\
+          \    async with engine.begin() as c:\n        await c.run_sync(Base.metadata.create_all)\nasyncio.run(m())\n\
+          print('schema ready')\n"
+        env: &id001
         - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
               name: ecommerce-secrets
               key: POSTGRES_PASSWORD
         - name: DATABASE_URL
-          value: postgresql+asyncpg://admin:$(POSTGRES_PASSWORD)@postgres:5432/media_db
+          value: postgresql+asyncpg://admin:$(POSTGRES_PASSWORD)@postgres:5432/media_meta_db
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: http://jaeger:4318
         resources:
@@ -46,14 +52,27 @@ spec:
             memory: 128Mi
           limits:
             cpu: 500m
-            memory: 512Mi
-        securityContext:
+            memory: 256Mi
+        securityContext: &id002
           allowPrivilegeEscalation: false
           runAsNonRoot: true
           runAsUser: 1000
           capabilities:
             drop:
             - ALL
+      containers:
+      - name: media-service
+        image: ecommerce-platform-media-service:latest
+        imagePullPolicy: IfNotPresent
+        env: *id001
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext: *id002
         command:
         - uvicorn
         - app.main:app
@@ -65,7 +84,7 @@ spec:
         - containerPort: 8018
           name: http
         readinessProbe:
-          httpGet: &id001
+          httpGet: &id003
             path: /health
             port: 8018
           initialDelaySeconds: 5
@@ -73,7 +92,7 @@ spec:
           timeoutSeconds: 3
           failureThreshold: 3
         livenessProbe:
-          httpGet: *id001
+          httpGet: *id003
           initialDelaySeconds: 30
           periodSeconds: 20
           timeoutSeconds: 5
