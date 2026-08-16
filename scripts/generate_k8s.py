@@ -178,8 +178,9 @@ def deployment(name: str, svc: dict, port: int | None) -> dict:
     # Keyed off the code actually being there, not off DATABASE_URL. A stub
     # service declares a DATABASE_URL while having no app/database.py or
     # app/models.py, so an init container crashed on ModuleNotFoundError and
-    # held the pod in Init:Error forever. media-service has both now and picks
-    # up an init container automatically; audit-service is still a stub.
+    # held the pod in Init:Error forever. media-service and audit-service both
+    # have them now and pick up init containers automatically, which is the
+    # check working as intended rather than a special case being removed.
     src = REPO / "services" / name / "app"
     has_orm = (src / "database.py").exists() and (src / "models.py").exists()
 

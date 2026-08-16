@@ -70,3 +70,8 @@ media_rules = load_module(
     "media_rules_under_test",
     "services/media-service/app/services/media_rules.py",
 )
+
+audit_rules = load_module(
+    "audit_rules_under_test",
+    "services/audit-service/app/services/audit_rules.py",
+)
