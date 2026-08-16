@@ -1,0 +1,12 @@
+# Dependencies for the end-to-end suite, which talks to running services over
+# HTTP and reads the service databases directly to check what actually landed.
+#
+# Separate from tests/requirements.txt on purpose: the unit tier must stay
+# installable with nothing but pytest, so that CI job cannot start depending on
+# a database driver by accident.
+httpx>=0.27
+asyncpg>=0.29
+
+# Used by fix_connectors.py and scripts that talk to the Debezium REST API.
+# Only needed for the full-stack bring-up, not by the tests themselves.
+requests>=2.31

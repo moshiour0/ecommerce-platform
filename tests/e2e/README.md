@@ -46,6 +46,32 @@ E2E_TARGET=forward PG_PORT=15432 python tests/e2e/run_suite.py
 E2E_URL_CATALOG_SERVICE=http://catalog.internal:8080 python tests/e2e/run_suite.py
 ```
 
+## What runs in CI
+
+`test_07_cart_cache_coherence` runs on every push, in
+`.github/workflows/stack-tests.yml`, alongside the three concurrency checks in
+`tests/integration`. It boots a five-container slice — postgres, redis,
+cart-service, inventory-service, api-gateway — which is everything those tests
+touch.
+
+`test_01` through `test_06` are **manual**. They drive the CQRS pipeline
+(Debezium → Kafka → Elasticsearch) and the saga, so trimming them is not
+possible: they need most of the platform or they are testing nothing. The full
+stack is 30 containers including five JVMs and wants roughly 8 GB, while a
+GitHub-hosted standard runner on a private repository is 2 cores and 8 GB.
+
+Two ways to automate the rest, if it becomes worth it:
+
+- a **self-hosted runner** on a machine that already runs the stack — free, and
+  the bring-up is exactly `make init`;
+- **larger GitHub runners**, which are billed per minute.
+
+Until then, run them by hand after any change to the CQRS or saga paths:
+
+```bash
+python tests/e2e/run_suite.py
+```
+
 ## Notes
 
 - Order matters: `test_02` and `test_03` read the product id `test_01` writes to
