@@ -85,3 +85,8 @@ notification_rules = load_module(
     "notification_rules_under_test",
     "workers/notification-worker/app/notification_rules.py",
 )
+
+dlq_rules = load_module(
+    "dlq_rules_under_test",
+    "workers/dlq-reprocessor/app/dlq_rules.py",
+)

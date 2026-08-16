@@ -401,6 +401,36 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8030" ]
 
+  dlq-reprocessor:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: workers/dlq-reprocessor
+    # Consumes Kafka, so it needs the broker ready. The python-service anchor
+    # waits only for Postgres.
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      # Workers occupy 8030-8039 and expose health/metrics only (Rule 2).
+      - "8032:8032"
+    environment:
+      - PYTHONPATH=/app:/app/shared_libs
+      # The mesh listener. kafka:9092 is advertised as localhost:9092 and is
+      # only usable from the host.
+      - KAFKA_BROKER=kafka:29092
+      - REDIS_URL=redis://redis:6379
+      # Escalations are written to the immutable audit log (§5).
+      - AUDIT_URL=http://audit-service:8019/audit
+      # §5 default is one hour. Short values are for demonstrating recovery
+      # without waiting; production should leave this alone.
+      - DLQ_BACKOFF_SECONDS=${DLQ_BACKOFF_SECONDS:-3600}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_SERVICE_NAME=dlq-reprocessor
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8032" ]
+
   notification-worker:
     <<: *python-service
     build:
