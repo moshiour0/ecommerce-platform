@@ -6,10 +6,12 @@ import os
 import sys
 import asyncpg
 
-ORDER_SAGA_URL = "http://localhost:8012/orders"
+from config import service_url, db_url, describe, ELASTICSEARCH_URL
+
+ORDER_SAGA_URL = service_url("order-saga") + "/orders"
 STATE_FILE = ".e2e_state.json"
-DB_URL = os.getenv("DATABASE_URL", "postgresql://admin:supersecret@localhost:5432/order_db")
-INVENTORY_DB_URL = os.getenv("INVENTORY_DATABASE_URL", "postgresql://admin:supersecret@localhost:5432/inventory_db")
+DB_URL = os.getenv("DATABASE_URL") or db_url("order_db")
+INVENTORY_DB_URL = os.getenv("INVENTORY_DATABASE_URL") or db_url("inventory_db")
 
 def get_product_id():
     if not os.path.exists(STATE_FILE):

@@ -1,35 +1,27 @@
 import subprocess
 import sys
 
+from config import internal_url, mesh_exec_prefix, describe
+
 # Define all 20 services with their internal Docker mesh hostnames and ports
-INTERNAL_SERVICES = {
-    "api-gateway": "http://api-gateway:8000",
-    "bff-shop": "http://bff-shop:8001",
-    "bff-checkout": "http://bff-checkout:8002",
-    "websocket-gateway": "http://websocket-gateway:8003",
-    "user-service": "http://user-service:8004",
-    "catalog-service": "http://catalog-service:8005",
-    "search-service": "http://search-service:8006",
-    "cart-service": "http://cart-service:8007",
-    "pricing-service": "http://pricing-service:8008",
-    "promotion-service": "http://promotion-service:8009",
-    "tax-service": "http://tax-service:8010",
-    "delivery-quote-service": "http://delivery-quote-service:8011",
-    "order-saga": "http://order-saga:8012",
-    "inventory-service": "http://inventory-service:8013",
-    "fraud-service": "http://fraud-service:8014",
-    "payment-service": "http://payment-service:8015",
-    "fulfillment-service": "http://fulfillment-service:8016",
-    "notification-service": "http://notification-service:8017",
-    "media-service": "http://media-service:8018",
-    "audit-service": "http://audit-service:8019"
-}
+# Built from the shared port map so this list cannot drift from the platform.
+# The addresses are identical under compose and Kubernetes; only the way into
+# the mesh differs, which mesh_exec_prefix handles.
+INTERNAL_SERVICES = {name: internal_url(name) for name in (
+    "api-gateway", "bff-shop", "bff-checkout", "websocket-gateway",
+    "user-service", "catalog-service", "search-service", "cart-service",
+    "pricing-service", "promotion-service", "tax-service",
+    "delivery-quote-service", "order-saga", "inventory-service",
+    "fraud-service", "payment-service", "fulfillment-service",
+    "notification-service", "media-service", "audit-service",
+)}
 
 def check_internal_connectivity():
     print("==================================================")
     print(" INITIATING INTRA-MESH CONNECTIVITY FORENSIC TEST")
     print("==================================================")
-    print("-> Sourcing pings from inside 'api-gateway' container...")
+    print(f"-> {describe()}")
+    print("-> Sourcing pings from inside the api-gateway container...")
     
     all_passed = True
     
@@ -43,7 +35,7 @@ def check_internal_connectivity():
             
         print(f"   -> Pinging {target_url} ...")
         # Run wget inside the api-gateway container
-        cmd = ["docker", "exec", "ecommerce-platform-api-gateway-1", "wget", "-qO-", "--timeout=2", target_url]
+        cmd = mesh_exec_prefix("api-gateway") + ["wget", "-qO-", "--timeout=2", target_url]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
             if result.returncode == 0:

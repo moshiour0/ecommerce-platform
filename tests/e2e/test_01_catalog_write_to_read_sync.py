@@ -6,10 +6,12 @@ import asyncio
 import asyncpg
 import os
 
-BFF_SHOP_URL = "http://localhost:8001"
-CATALOG_URL = "http://localhost:8005"
-ES_URL = "http://localhost:9200"
-DB_URL = os.getenv("DATABASE_URL", "postgresql://admin:supersecret@localhost:5432/catalog_db")
+from config import service_url, db_url, describe, ELASTICSEARCH_URL
+
+BFF_SHOP_URL = service_url("bff-shop")
+CATALOG_URL = service_url("catalog-service")
+ES_URL = ELASTICSEARCH_URL
+DB_URL = os.getenv("DATABASE_URL") or db_url("catalog_db")
 
 category_id = str(uuid.uuid4())
 idempotency_key = str(uuid.uuid4())

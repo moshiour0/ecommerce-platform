@@ -6,13 +6,15 @@ import asyncio
 import asyncpg
 import os
 
+from config import service_url, db_url, describe, ELASTICSEARCH_URL
+
 # Service URLs
-CART_URL = "http://localhost:8007/cart"
-BFF_CHECKOUT_URL = "http://localhost:8002/api/checkout"
-CATALOG_URL = "http://localhost:8005/products"
-PRICING_URL = "http://localhost:8008/prices"
-DB_URL = os.getenv("DATABASE_URL", "postgresql://admin:supersecret@localhost:5432/catalog_db")
-INVENTORY_DB_URL = os.getenv("INVENTORY_DATABASE_URL", "postgresql://admin:supersecret@localhost:5432/inventory_db")
+CART_URL = service_url("cart-service") + "/cart"
+BFF_CHECKOUT_URL = service_url("bff-checkout") + "/api/checkout"
+CATALOG_URL = service_url("catalog-service") + "/products"
+PRICING_URL = service_url("pricing-service") + "/prices"
+DB_URL = os.getenv("DATABASE_URL") or db_url("catalog_db")
+INVENTORY_DB_URL = os.getenv("INVENTORY_DATABASE_URL") or db_url("inventory_db")
 
 async def main():
     print("==================================================")
@@ -136,8 +138,7 @@ async def main():
                     
                     print("\n3. Saga is now executing downstream distributed transactions...")
                     print("   Polling Postgres database directly to verify completion...")
-                    db_url = os.getenv("DATABASE_URL", "postgresql://admin:supersecret@localhost:5432/order_db")
-                    poll_conn = await asyncpg.connect(db_url)
+                    poll_conn = await asyncpg.connect(db_url("order_db"))
                     try:
                         for attempt in range(1, 16):
                             await asyncio.sleep(2)

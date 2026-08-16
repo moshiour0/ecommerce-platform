@@ -2,14 +2,16 @@ import asyncio
 import httpx
 import sys
 
+from config import service_url, describe
+
 # Define auxiliary services and their mapped ports from docker-compose.apps.yml
-AUX_SERVICES = {
-    "user-service": "http://localhost:8004",
-    "promotion-service": "http://localhost:8009",
-    "tax-service": "http://localhost:8010",
-    "media-service": "http://localhost:8018",
-    "audit-service": "http://localhost:8019"
-}
+AUX_SERVICES = {name: service_url(name) for name in (
+    "user-service",
+    "promotion-service",
+    "tax-service",
+    "media-service",
+    "audit-service",
+)}
 
 async def check_health(client, name, url):
     print(f"-> Pinging {name} at {url}/health ...")

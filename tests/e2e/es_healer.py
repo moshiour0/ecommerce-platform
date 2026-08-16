@@ -3,11 +3,13 @@ import asyncpg
 import httpx
 import os
 
+from config import db_url, ELASTICSEARCH_URL
+
 # Connection strings for the three source-of-truth databases
-CATALOG_DB = os.getenv("CATALOG_DB_URL", "postgresql://admin:supersecret@localhost:5432/catalog_db")
-PRICING_DB = os.getenv("PRICING_DB_URL", "postgresql://admin:supersecret@localhost:5432/pricing_db")
-INVENTORY_DB = os.getenv("INVENTORY_DB_URL", "postgresql://admin:supersecret@localhost:5432/inventory_db")
-ES_URL = "http://localhost:9200/products/_doc/"
+CATALOG_DB = os.getenv("CATALOG_DB_URL") or db_url("catalog_db")
+PRICING_DB = os.getenv("PRICING_DB_URL") or db_url("pricing_db")
+INVENTORY_DB = os.getenv("INVENTORY_DB_URL") or db_url("inventory_db")
+ES_URL = ELASTICSEARCH_URL + "/products/_doc/"
 
 async def heal_elasticsearch():
     print("Starting Elasticsearch Direct Sync Healer...")
