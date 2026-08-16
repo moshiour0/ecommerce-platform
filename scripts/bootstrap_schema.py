@@ -75,6 +75,7 @@ MIGRATIONS = [
     ("007_payment_db_processed_webhooks.sql", ["payment_ledger_db"]),
     ("008_notification_db_delivery_state.sql", ["notification_db"]),
     ("009_catalog_db_sku_and_is_active.sql", ["catalog_db"]),
+    ("010_cart_db_cart_state_updated_at.sql", ["cart_db"]),
 ]
 
 LEDGER_DDL = """

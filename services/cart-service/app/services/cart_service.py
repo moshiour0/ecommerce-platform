@@ -163,7 +163,8 @@ async def checkout_cart(db: AsyncSession, redis: Redis, user_id: str, idempotenc
         # Only sweep-safe if we successfully claim this transition
         result = await db.execute(
             text("""
-                UPDATE cart_state SET status = 'checkout_in_progress'
+                UPDATE cart_state
+                SET status = 'checkout_in_progress', updated_at = NOW()
                 WHERE user_id = :user_id AND status = 'active'
                 RETURNING cart_id
             """),

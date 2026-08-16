@@ -13,6 +13,12 @@ class CartState(Base):
     status = Column(String(50), nullable=False, default='active')
     expires_at = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    # When this row last changed. The sweeper's reclaim pass measures how
+    # long a cart has sat in checkout_in_progress from here; without it that
+    # pass filtered on a column that did not exist and never ran.
+    updated_at = Column(DateTime(timezone=True),
+                        default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
 
 class OutboxMessage(Base):
     __tablename__ = "outbox_messages"

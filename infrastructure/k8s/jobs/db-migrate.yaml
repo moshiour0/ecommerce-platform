@@ -176,6 +176,26 @@ data:
     \ NULL;\n\n-- Unique because a SKU identifies the product to everything outside this\n-- system. Created\
     \ as an index rather than a table constraint so IF NOT EXISTS\n-- applies and re-running is safe.\n\
     CREATE UNIQUE INDEX IF NOT EXISTS ux_products_sku\n    ON public.products (sku);\n"
+  010_cart_db_cart_state_updated_at.sql: "-- 010 (cart_db): the column the checkout reclaim sweep has\
+    \ always filtered on\n--\n-- The sweeper's second pass reclaims carts stuck in checkout_in_progress\
+    \ for\n-- more than ten minutes (\xA73, cart-service). It filtered on cart_state.updated_at,\n-- and\
+    \ that column has never existed, so the query failed with \"column\n-- updated_at does not exist\"\
+    \ on every run since the sweeper was written. The\n-- result was 34 carts stuck in checkout_in_progress\
+    \ permanently -- each one a\n-- cart that can never be checked out again, holding inventory that is\
+    \ never\n-- released.\n--\n-- Existing rows are backfilled from created_at rather than NOW(). NOW()\
+    \ would\n-- restart everyone's ten-minute clock and hide the backlog for another ten\n-- minutes;\
+    \ created_at is the truthful answer to \"when do we last know this row\n-- changed\", and it means\
+    \ the first sweep after this migration reclaims the\n-- carts that have been stuck for days. That\
+    \ mass reclaim is the point, not a\n-- side effect.\n--\n-- Rule 10: run as a Job or InitContainer,\
+    \ never in the app startup path.\n--   psql -U admin -d cart_db -f migrations/010_cart_db_cart_state_updated_at.sql\n\
+    --\n-- Idempotent.\n\nALTER TABLE public.cart_state\n    ADD COLUMN IF NOT EXISTS updated_at timestamp\
+    \ with time zone;\n\nUPDATE public.cart_state\nSET updated_at = COALESCE(created_at, NOW())\nWHERE\
+    \ updated_at IS NULL;\n\nALTER TABLE public.cart_state\n    ALTER COLUMN updated_at SET DEFAULT NOW();\n\
+    \nALTER TABLE public.cart_state\n    ALTER COLUMN updated_at SET NOT NULL;\n\n-- Both sweeps filter\
+    \ on status and a timestamp. Without an index each pass is a\n-- sequential scan of every cart ever\
+    \ created, once a minute, forever.\nCREATE INDEX IF NOT EXISTS ix_cart_state_status_updated_at\n \
+    \   ON public.cart_state (status, updated_at);\n\nCREATE INDEX IF NOT EXISTS ix_cart_state_status_expires_at\n\
+    \    ON public.cart_state (status, expires_at);\n"
 
 ---
 apiVersion: batch/v1
