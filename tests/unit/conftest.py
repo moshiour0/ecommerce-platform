@@ -50,3 +50,8 @@ charge_rules = load_module(
     "charge_rules_under_test",
     "services/payment-service/app/services/charge_rules.py",
 )
+
+checkout_lock = load_module(
+    "checkout_lock_under_test",
+    "services/cart-service/app/services/checkout_lock.py",
+)

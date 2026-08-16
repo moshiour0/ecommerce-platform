@@ -10,6 +10,9 @@ from redis.asyncio import Redis
 from sqlalchemy.dialects.postgresql import insert
 from ..models import OutboxMessage, IdempotencyKey, CartState
 from ..schemas import CartAddRequest, CartResponse, CartItem
+from .checkout_lock import (
+    acquire as acquire_lock, lock_key_for, new_token, release as release_lock,
+)
 
 logger = logging.getLogger(__name__)
 CART_TTL = 3600  # 1 hour
@@ -86,9 +89,9 @@ async def checkout_cart(db: AsyncSession, redis: Redis, user_id: str, idempotenc
     # Postgres commit could outlive the 10s TTL, a second request would acquire
     # the lock, and this request's finally-block would delete a lock it no
     # longer owns -- releasing mutual exclusion at exactly the wrong moment.
-    lock_key = f"lock:checkout:{user_id}"
-    lock_token = str(uuid.uuid4())
-    lock_acquired = await redis.set(lock_key, lock_token, nx=True, ex=10)
+    lock_key = lock_key_for(user_id)
+    lock_token = new_token()
+    lock_acquired = await acquire_lock(redis, lock_key, lock_token)
     if not lock_acquired:
         raise HTTPException(status_code=409, detail="Checkout already in progress for this user")
 
@@ -141,14 +144,11 @@ async def checkout_cart(db: AsyncSession, redis: Redis, user_id: str, idempotenc
 
         return {"status": "Checkout initiated", "user_id": user_id}
     finally:
-        # Compare-and-delete: only release the lock if we still hold it.
-        # DELETE and the ownership check must be atomic, so this runs as a
-        # Lua script rather than a GET followed by a DELETE.
-        await redis.eval(
-            "if redis.call('get', KEYS[1]) == ARGV[1] "
-            "then return redis.call('del', KEYS[1]) else return 0 end",
-            1, lock_key, lock_token
-        )
+        # Compare-and-delete: release only if we still hold it. An
+        # unconditional DELETE here would free a lock a *later* request had
+        # acquired after our TTL lapsed. See checkout_lock for the protocol
+        # and its tests.
+        await release_lock(redis, lock_key, lock_token)
 
 async def get_cart(redis: Redis, user_id: str) -> CartResponse:
     cart_key = f"cart:{user_id}"
