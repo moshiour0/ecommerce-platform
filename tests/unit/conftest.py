@@ -117,3 +117,10 @@ event_rules = load_module(
     "event_rules_under_test",
     "workers/stream-processor/app/consumers/event_rules.py",
 )
+
+# fix_connectors.py imports requests lazily, inside the functions that talk to
+# Debezium, so the config builder can be loaded here with nothing installed.
+connector_config = load_module(
+    "connector_config_under_test",
+    "fix_connectors.py",
+)

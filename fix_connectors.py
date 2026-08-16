@@ -1,6 +1,5 @@
 import os
 import sys
-import requests
 import time
 import json
 
@@ -45,7 +44,64 @@ DATABASES = {
     "media_meta_db":     "media",
 }
 
+def build_config(db: str, service_name: str,
+                 pg_user: str = None, pg_password: str = None,
+                 pg_host: str = None) -> dict:
+    """The connector configuration for one service database.
+
+    A function rather than a literal inside the loop so it can be tested. Two
+    of its details are load-bearing and were each a real outage:
+
+      * slot.name is unique per service. Postgres allows one replication slot
+        per name, so connectors that share one fight over it -- which is what
+        happened when eight hand-written JSON files under workers/cdc-outbox
+        omitted the field entirely and every connector fell back to the default
+        "debezium" slot.
+      * the additional field placement carries the outbox `type` column as a
+        Kafka header. Without it the consumer has to infer an event's type from
+        the shape of its fields, and that guess indexed every failed inventory
+        reservation as a product.
+    """
+    pg_user = pg_user or PG_USER
+    pg_password = pg_password or PG_PASSWORD
+    pg_host = pg_host or PG_HOST
+    return {
+        "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+        "tasks.max": "1",
+        "database.hostname": pg_host,
+        "database.port": "5432",
+        "database.user": pg_user,
+        "database.password": pg_password,
+        "database.dbname": db,
+        "topic.prefix": f"{service_name}_server",
+        "plugin.name": "pgoutput",
+        "table.include.list": "public.outbox_messages",
+        "slot.name": f"{service_name}_slot",  # <--- THE GUARANTEED UNIQUE SLOT FIX
+        "tombstones.on.delete": "false",
+        "transforms": "outbox",
+        "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+        "transforms.outbox.route.topic.replacement": "${routedByValue}.events",
+        "transforms.outbox.table.field.event.id": "id",
+        "transforms.outbox.table.field.event.key": "aggregate_id",
+        "transforms.outbox.table.field.event.type": "type",
+        "transforms.outbox.table.field.event.payload": "payload",
+        "transforms.outbox.route.by.field": "aggregate_type",
+        # The outbox `type` column travels as a Kafka header. It cannot go in the
+        # message envelope: that is part of the Avro value schema, and the
+        # registry runs FULL_TRANSITIVE (Rule 5), which rejected the change
+        # outright -- "Schema being registered is incompatible with an earlier
+        # schema" -- and failed the connector task. Without this header the
+        # consumer has to guess an event's type from the shape of its fields,
+        # and guessing indexed every failed reservation as a product.
+        "transforms.outbox.table.fields.additional.placement": "created_at:header:timestamp,type:header:eventType",
+        "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+        "value.converter": "io.confluent.connect.avro.AvroConverter",
+        "value.converter.schema.registry.url": "http://schema-registry:8081"
+    }
+
+
 def wait_for_debezium():
+    import requests
     print("Waiting for Debezium to accept connections...")
     while True:
         try:
@@ -58,42 +114,11 @@ def wait_for_debezium():
         time.sleep(2)
 
 def provision_connectors():
+    import requests
     for db, service_name in DATABASES.items():
         connector_name = f"{service_name}-outbox-connector"
         
-        config = {
-            "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
-            "tasks.max": "1",
-            "database.hostname": PG_HOST,
-            "database.port": "5432",
-            "database.user": PG_USER,
-            "database.password": PG_PASSWORD,
-            "database.dbname": db,
-            "topic.prefix": f"{service_name}_server",
-            "plugin.name": "pgoutput",
-            "table.include.list": "public.outbox_messages",
-            "slot.name": f"{service_name}_slot",  # <--- THE GUARANTEED UNIQUE SLOT FIX
-            "tombstones.on.delete": "false",
-            "transforms": "outbox",
-            "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
-            "transforms.outbox.route.topic.replacement": "${routedByValue}.events",
-            "transforms.outbox.table.field.event.id": "id",
-            "transforms.outbox.table.field.event.key": "aggregate_id",
-            "transforms.outbox.table.field.event.type": "type",
-            "transforms.outbox.table.field.event.payload": "payload",
-            "transforms.outbox.route.by.field": "aggregate_type",
-            # The outbox `type` column travels as a Kafka header. It cannot go in the
-            # message envelope: that is part of the Avro value schema, and the
-            # registry runs FULL_TRANSITIVE (Rule 5), which rejected the change
-            # outright -- "Schema being registered is incompatible with an earlier
-            # schema" -- and failed the connector task. Without this header the
-            # consumer has to guess an event's type from the shape of its fields,
-            # and guessing indexed every failed reservation as a product.
-            "transforms.outbox.table.fields.additional.placement": "created_at:header:timestamp,type:header:eventType",
-            "key.converter": "org.apache.kafka.connect.storage.StringConverter",
-            "value.converter": "io.confluent.connect.avro.AvroConverter",
-            "value.converter.schema.registry.url": "http://schema-registry:8081"
-        }
+        config = build_config(db, service_name)
 
         payload = {
             "name": connector_name,

@@ -2,7 +2,7 @@
 
 An event-driven commerce backend built to explore the problems that only appear
 under concurrency: overselling, double checkout, duplicate charges, lost carts,
-and sagas that strand an order halfway through. Twenty services and seven workers
+and sagas that strand an order halfway through. Twenty services and six workers
 communicate through a transactional outbox and Kafka, orchestrated by an
 explicit saga state machine with compensation for every step that moves money
 or stock.
@@ -17,7 +17,7 @@ This repository documents what is built, not what is planned.
 | | Count | |
 |---|---|---|
 | Services | 20 | all carry substantive logic |
-| Workers | 7 | `saga-dispatcher`, `stream-processor`, `cdc-outbox`, `notification-worker`, `reindex-worker`, `webhook-handler`, `dlq-reprocessor` |
+| Workers | 6 | `saga-dispatcher`, `stream-processor`, `notification-worker`, `reindex-worker`, `webhook-handler`, `dlq-reprocessor` — the six §3b names, all implemented |
 | Kubernetes manifests | 32 | generated from compose, never hand-edited |
 
 "Built" means the code is there and does its job; it does not mean every path
@@ -196,7 +196,7 @@ JavaScript and fails if the two ever disagree.
 
 ```
 services/           20 services (Python/FastAPI, Node/Express at the edge)
-workers/            Kafka consumers and the CDC connector registration
+workers/            Kafka consumers and pollers
 shared/libs/        Cross-service Python and Node libraries
 migrations/         Numbered SQL, applied per-database
 scripts/            Schema bootstrap, Kubernetes generation
