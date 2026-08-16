@@ -36,6 +36,25 @@ IMAGE_TAG = "latest"
 
 # Values that must come from a Secret, never a ConfigMap (Rule 8).
 SECRET_KEYS = {"JWT_SECRET", "POSTGRES_PASSWORD"}
+
+# ...and anything that looks like a secret by name, so this list does not have
+# to be remembered. It was an allowlist of exactly two, which meant adding
+# PSP_WEBHOOK_SECRET to compose silently produced a manifest containing the
+# real signing secret in plaintext -- in a generated file that goes straight
+# into git. A name-shaped default fails closed: the cost of wrongly treating a
+# variable as secret is a missing Secret key, which is loud, while the cost of
+# wrongly treating a secret as config is a committed credential, which is not.
+SECRET_SUFFIXES = ("_SECRET", "_PASSWORD", "_TOKEN", "_API_KEY", "_PRIVATE_KEY")
+
+
+def secret_key_for(name: str):
+    """The Secret key backing this variable, or None if it is ordinary config."""
+    for known in SECRET_KEYS:
+        if known in name:
+            return known
+    if name.endswith(SECRET_SUFFIXES):
+        return name
+    return None
 SECRET_NAME = "ecommerce-secrets"
 CONFIG_NAME = "ecommerce-config"
 
@@ -46,7 +65,7 @@ CONFIG_NAME = "ecommerce-config"
 INFRA = {"postgres", "redis", "kafka", "zookeeper", "elasticsearch",
          "schema-registry", "jaeger", "debezium"}
 
-WORKERS = {"saga-dispatcher", "stream-processor"}
+WORKERS = {"saga-dispatcher", "stream-processor", "webhook-handler"}
 
 # Rough sizing. Deliberately explicit: a pod with no requests is unschedulable
 # in a constrained cluster and a pod with no limits can starve its neighbours.
@@ -93,7 +112,7 @@ def split_env(env: dict):
     cfg, secrets, needs_pg = {}, [], False
     for k, v in (env or {}).items():
         v = "" if v is None else str(v)
-        hit = next((s for s in SECRET_KEYS if s in k), None)
+        hit = secret_key_for(k)
         if hit:
             secrets.append((k, hit))
             continue

@@ -72,6 +72,7 @@ MIGRATIONS = [
     ("004_outbox_for_audit_and_media.sql", ["audit_db", "media_meta_db"]),
     ("005_dispatcher_processed_state.sql", ["order_db"]),
     ("006_dispatcher_claim_lease.sql", ["order_db"]),
+    ("007_payment_db_processed_webhooks.sql", ["payment_ledger_db"]),
 ]
 
 LEDGER_DDL = """

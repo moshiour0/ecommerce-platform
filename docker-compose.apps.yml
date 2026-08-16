@@ -401,6 +401,34 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8030" ]
 
+  webhook-handler:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: workers/webhook-handler
+    ports:
+      # Workers occupy 8030-8039 (Rule 2). This one is unusual in serving a
+      # real external API rather than only health and metrics, because
+      # terminating a PSP webhook is what it is for.
+      - "8035:8035"
+    environment:
+      - PYTHONPATH=/app:/app/shared_libs
+      # Writes into payment-service's schema. §3b records this as the
+      # deliberate exception to Rule 1: the alternative is a synchronous call
+      # into payment-service on the webhook path, and a PSP that times out
+      # retries, which is the storm this component absorbs.
+      - PAYMENT_DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/payment_ledger_db
+      - REDIS_URL=redis://redis:6379
+      # Rule 8: no fallback. A webhook handler without a signing secret accepts
+      # anything that reaches it, so compose refuses to start rather than
+      # substituting a default committed to the repository.
+      - PSP_WEBHOOK_SECRET=${PSP_WEBHOOK_SECRET:?PSP_WEBHOOK_SECRET must be set in .env (see .env.example)}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_SERVICE_NAME=webhook-handler
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8035" ]
+
 networks:
   mesh:
     external: true

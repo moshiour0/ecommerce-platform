@@ -121,6 +121,20 @@ data:
     \ the previous partial index, which did not cover the claim column.\nDROP INDEX IF EXISTS ix_outbox_unprocessed_commands;\n\
     \nCREATE INDEX IF NOT EXISTS ix_outbox_claimable\n    ON public.outbox_messages (created_at)\n   \
     \ WHERE processed_at IS NULL;\n"
+  007_payment_db_processed_webhooks.sql: "-- 007 (payment_ledger_db): durable webhook deduplication\n\
+    --\n-- Layer 3 of the four in \xA74. Redis (layer 2) answers the common case cheaply,\n-- but it is\
+    \ memory: a flush, a restart without persistence, or an eviction\n-- turns every past webhook into\
+    \ a new one, and a PSP replaying a week of\n-- events would then be charged straight through to the\
+    \ outbox.\n--\n-- Owned by payment-service's database rather than by webhook-handler, which\n-- has\
+    \ no database of its own (\xA73b). The handler writes here and to\n-- outbox_messages in the same\
+    \ transaction, so an event can never be marked\n-- processed without the event it produced.\n--\n\
+    --   psql -U admin -d payment_ledger_db -f migrations/007_payment_db_processed_webhooks.sql\n\nCREATE\
+    \ TABLE IF NOT EXISTS processed_webhooks (\n    -- The PSP's own event id. PRIMARY KEY is the dedup:\
+    \ a second delivery of\n    -- the same event cannot insert, and ON CONFLICT DO NOTHING turns that\
+    \ into\n    -- a rowcount of zero rather than an error.\n    event_id     TEXT        NOT NULL PRIMARY\
+    \ KEY,\n    event_type   TEXT        NOT NULL,\n    received_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()\n\
+    );\n\n-- Retention sweeps by age, and the dedup window is 7 days.\nCREATE INDEX IF NOT EXISTS ix_processed_webhooks_received_at\n\
+    \    ON processed_webhooks (received_at);\n"
 
 ---
 apiVersion: batch/v1

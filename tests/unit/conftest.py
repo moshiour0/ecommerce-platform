@@ -75,3 +75,8 @@ audit_rules = load_module(
     "audit_rules_under_test",
     "services/audit-service/app/services/audit_rules.py",
 )
+
+webhook_rules = load_module(
+    "webhook_rules_under_test",
+    "workers/webhook-handler/app/webhook_rules.py",
+)
