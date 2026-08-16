@@ -50,11 +50,40 @@ jobs:
         with:
           python-version: '3.11'
 
-      # Compose refuses to start without JWT_SECRET (Rule 8: no hardcoded
-      # secret fallbacks). Generated per run rather than committed, so nothing
-      # in this repository looks like a usable signing key.
-      - name: Generate a run-scoped JWT secret
-        run: echo "JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+      # Same as `make env`: the stack is configured through .env, and a runner
+      # has none because it is gitignored.
+      #
+      # Setting only JWT_SECRET is not enough, which the first run proved.
+      # Every service's DATABASE_URL interpolates ${POSTGRES_USER} and
+      # ${POSTGRES_PASSWORD} with no default, so without .env they resolve to
+      # empty strings and every service gets postgresql://:@postgres/... and
+      # cannot authenticate. Those are the only two variables in either compose
+      # file that have no fallback, and .env.example supplies both.
+      #
+      # The secret is generated per run rather than taken from .env.example, so
+      # nothing in this repository is ever a usable signing key.
+      - name: Create .env
+        run: |
+          cp .env.example .env
+          SECRET=$(openssl rand -hex 32)
+          sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$SECRET|" .env
+          echo "POSTGRES_USER=$(grep '^POSTGRES_USER=' .env | cut -d= -f2)"
+          echo "JWT_SECRET set to a generated value"
+
+      # docker-compose.apps.yml overrides the mesh network to external:true with
+      # an explicit name, so the merged config expects it to already exist and
+      # compose will not create it. On a development machine it does exist --
+      # docker-compose.yml alone created it once and it outlived every
+      # `compose down`. A runner starts with nothing, which is what the first
+      # run hit: "network ecommerce-platform_mesh declared as external, but
+      # could not be found", after building all three images.
+      #
+      # Created here rather than by making the network non-external, because the
+      # external declaration is what lets the integration checks attach their
+      # own curl container to the same network by name.
+      - name: Create the mesh network
+        run: |
+          docker network inspect "$MESH" >/dev/null 2>&1 || docker network create "$MESH"
 
       - name: Build and start the slice
         run: |
