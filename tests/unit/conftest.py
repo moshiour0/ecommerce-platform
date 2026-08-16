@@ -100,3 +100,8 @@ catalog_rules = load_module(
     "catalog_rules_under_test",
     "services/catalog-service/app/services/catalog_rules.py",
 )
+
+search_rules = load_module(
+    "search_rules_under_test",
+    "services/search-service/app/services/search_rules.py",
+)

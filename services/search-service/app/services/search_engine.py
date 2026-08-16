@@ -1,5 +1,6 @@
 from elasticsearch import AsyncElasticsearch
 from ..schemas import SearchResponse, SearchResultItem
+from .search_rules import effective_price
 
 INDEX_NAME = "products"
 
@@ -56,11 +57,16 @@ async def search_products(es: AsyncElasticsearch, query: str, page: int, size: i
     items = []
     for hit in hits:
         source = hit["_source"]
+        # pricing's price if it has published one, catalog's list price
+        # otherwise, and None rather than 0 when neither has. See
+        # search_rules for why a silent zero is the wrong answer.
+        price, price_source = effective_price(source)
         items.append(SearchResultItem(
             product_id=source.get("product_id"),
             name=source.get("name"),
             description=source.get("description"),
-            price_cents=source.get("price_cents", 0),
+            price_cents=price,
+            price_source=price_source,
             quantity_available=source.get("quantity_available", 0)
         ))
 

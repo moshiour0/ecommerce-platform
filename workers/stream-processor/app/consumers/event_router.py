@@ -14,15 +14,30 @@ def process_event(event_type: str, payload: Dict[str, Any]):
     try:
         if event_type == "ProductCreated":
             doc_id = payload.get("id")
+            # A partial update, never es.index(). index() REPLACES the whole
+            # document, so a ProductCreated arriving after a price or stock
+            # event -- a Kafka redelivery, a consumer replaying from an earlier
+            # offset, or simply two topics with no ordering between them --
+            # silently erased price_cents and quantity_available. Kafka is
+            # at-least-once, so that redelivery is expected rather than
+            # exotic.
             doc = {
-                "product_id": doc_id,
-                "sku": payload.get("sku"),
-                "name": payload.get("name"),
-                "description": payload.get("description"),
-                "is_active": payload.get("is_active", True),
-                "updated_at": payload.get("created_at")
+                "doc": {
+                    "product_id": doc_id,
+                    "sku": payload.get("sku"),
+                    "name": payload.get("name"),
+                    "description": payload.get("description"),
+                    "is_active": payload.get("is_active", True),
+                    # catalog's list price, under its own name. pricing-service
+                    # owns price_cents (§3); writing catalog's number there
+                    # would give one field two writers and let a stale base
+                    # price overwrite a published one.
+                    "base_price_cents": payload.get("price_cents"),
+                    "updated_at": payload.get("created_at")
+                },
+                "doc_as_upsert": True
             }
-            es.index(index=INDEX_NAME, id=doc_id, document=doc)
+            es.update(index=INDEX_NAME, id=doc_id, body=doc)
             logger.info(f"Indexed new ProductCreated document for {doc_id}")
 
         elif event_type == "PriceUpdated":

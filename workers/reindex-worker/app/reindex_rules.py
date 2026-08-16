@@ -4,9 +4,13 @@ Reindex decisions, as pure functions.
 A backfill rebuilds the `products` read model from the catalog, which sounds
 like "write the document" and is not. The document has three owners:
 
-    catalog-service    product_id, sku, name, description, is_active
-    pricing-service    price_cents
+    catalog-service    product_id, sku, name, description, is_active,
+                       base_price_cents (the list price)
+    pricing-service    price_cents (the effective price)
     inventory-service  quantity_available
+
+Exactly one writer per field, which is the whole point: catalog's price and
+pricing's price used to be the same name with two claimants.
 
 stream-processor maintains the last two with partial updates as events arrive.
 A reindex that writes a whole document from catalog rows therefore deletes
@@ -56,13 +60,14 @@ from typing import Any, Dict, List, Optional, Tuple
 # harmless, and the day the columns landed the backfill picked them up with no
 # change here.
 #
-# catalog_db.products DOES have price_cents, and it is deliberately not indexed
-# from here. The read model's price_cents is maintained by pricing-service,
-# which owns pricing (§3); catalog's column is a base price that may not be what
-# pricing last published. Writing it during a backfill would silently roll every
-# product back to its base price.
+# catalog_db.products.price_cents is indexed as base_price_cents, never as
+# price_cents. pricing-service owns the effective price (§3); catalog's column
+# is a list price. Writing it to price_cents would give one field two writers
+# and let a backfill roll every product back to whatever it was created at.
+# Under its own name it has a single writer and search falls back to it only
+# when pricing has published nothing.
 CATALOG_FIELDS = ("product_id", "sku", "name", "description", "is_active",
-                  "updated_at")
+                  "base_price_cents", "updated_at")
 
 # Written only by this worker, and the only thing the freshness guard reads.
 # Sharing `updated_at` with pricing and inventory made the guard compare a

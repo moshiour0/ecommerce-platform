@@ -67,6 +67,9 @@ SELECT id::text AS product_id,
        name,
        description,
        is_active,
+       -- catalog's list price, indexed under its own name so it cannot
+       -- collide with the effective price pricing-service publishes.
+       price_cents AS base_price_cents,
        created_at AS updated_at
 FROM products
 WHERE ($1::timestamptz IS NULL)

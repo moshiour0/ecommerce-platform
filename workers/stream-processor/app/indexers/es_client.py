@@ -31,7 +31,11 @@ INDEX_MAPPING = {
             "sku": {"type": "keyword"},
             "name": {"type": "text"},
             "description": {"type": "text"},
+            # Written only by pricing-service: the effective price.
             "price_cents": {"type": "integer"},
+            # Written only by catalog-service: the list price, and the
+            # fallback search uses until pricing has published.
+            "base_price_cents": {"type": "integer"},
             "quantity_available": {"type": "integer"},
             "is_active": {"type": "boolean"},
             "updated_at": {"type": "date"},

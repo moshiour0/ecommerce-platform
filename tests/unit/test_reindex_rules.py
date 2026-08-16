@@ -42,6 +42,15 @@ def catalog_row(**overrides):
 # field ownership — the expensive mistake
 # ---------------------------------------------------------------------------
 
+def test_the_catalog_list_price_is_carried_under_its_own_name():
+    # One writer per field. catalog's price is base_price_cents; pricing's is
+    # price_cents. Writing catalog's number into price_cents is what made the
+    # field ambiguous in the first place.
+    doc = build_document(catalog_row(base_price_cents=1500))
+    assert doc["base_price_cents"] == 1500
+    assert "price_cents" not in doc
+
+
 def test_a_reindex_never_writes_price_or_stock():
     # The document is assembled from three services. Writing a whole document
     # from catalog rows erases every price and stock level in the index, and
