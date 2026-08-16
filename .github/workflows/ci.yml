@@ -63,3 +63,11 @@ jobs:
       - name: Run unit tests
         run: npm test
         working-directory: services/api-gateway
+
+      # node-common ships into every Node image, so a break here breaks all of
+      # them. Its read_model tests need no dependencies either -- resilience.js
+      # requires axios, but the tests import read_model directly rather than
+      # through index.js, so nothing has to be installed.
+      - name: Run shared Node library tests
+        run: npm test
+        working-directory: shared/libs/node-common
