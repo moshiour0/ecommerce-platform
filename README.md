@@ -278,6 +278,8 @@ The ones that come up constantly:
 
 ## Documentation
 
+- [MARKETPLACE_ROADMAP.md](MARKETPLACE_ROADMAP.md) — how this becomes a
+  multi-vendor marketplace: the decisions to make first, and the phases
 - [ARCHITECTURE_STATE_FINAL.md](ARCHITECTURE_STATE_FINAL.md) — services, rules,
   saga vocabulary, DLQ policy
 - [mermaid_architecture.md](mermaid_architecture.md) — full diagrams
