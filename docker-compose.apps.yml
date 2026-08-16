@@ -401,6 +401,25 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8030" ]
 
+  notification-worker:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: workers/notification-worker
+    ports:
+      # Workers occupy 8030-8039 and expose health/metrics only (Rule 2).
+      - "8034:8034"
+    environment:
+      - PYTHONPATH=/app:/app/shared_libs
+      # Claims from notification-service's table. The service owns the
+      # notification, the worker owns its delivery (§3b).
+      - NOTIFICATION_DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/notification_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_SERVICE_NAME=notification-worker
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8034" ]
+
   webhook-handler:
     <<: *python-service
     build:

@@ -46,6 +46,9 @@ SECRET_KEYS = {"JWT_SECRET", "POSTGRES_PASSWORD"}
 # wrongly treating a secret as config is a committed credential, which is not.
 SECRET_SUFFIXES = ("_SECRET", "_PASSWORD", "_TOKEN", "_API_KEY", "_PRIVATE_KEY")
 
+SECRET_NAME = "ecommerce-secrets"
+CONFIG_NAME = "ecommerce-config"
+
 
 def secret_key_for(name: str):
     """The Secret key backing this variable, or None if it is ordinary config."""
@@ -55,8 +58,6 @@ def secret_key_for(name: str):
     if name.endswith(SECRET_SUFFIXES):
         return name
     return None
-SECRET_NAME = "ecommerce-secrets"
-CONFIG_NAME = "ecommerce-config"
 
 # Infrastructure lives outside this generator: in a real cluster Postgres,
 # Kafka and Elasticsearch are operators or managed services, not Deployments
@@ -65,7 +66,8 @@ CONFIG_NAME = "ecommerce-config"
 INFRA = {"postgres", "redis", "kafka", "zookeeper", "elasticsearch",
          "schema-registry", "jaeger", "debezium"}
 
-WORKERS = {"saga-dispatcher", "stream-processor", "webhook-handler"}
+WORKERS = {"saga-dispatcher", "stream-processor", "webhook-handler",
+           "notification-worker"}
 
 # Rough sizing. Deliberately explicit: a pod with no requests is unschedulable
 # in a constrained cluster and a pod with no limits can starve its neighbours.

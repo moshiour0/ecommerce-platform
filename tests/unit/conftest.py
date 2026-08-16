@@ -80,3 +80,8 @@ webhook_rules = load_module(
     "webhook_rules_under_test",
     "workers/webhook-handler/app/webhook_rules.py",
 )
+
+notification_rules = load_module(
+    "notification_rules_under_test",
+    "workers/notification-worker/app/notification_rules.py",
+)
