@@ -56,7 +56,7 @@ verify:
 		for t in test_01_catalog_write_to_read_sync test_02_cqrs_distributed_updates \
 		         test_03_saga_orchestrator test_04_full_checkout_flow \
 		         test_05_auxiliary_services test_06_intra_mesh_connectivity \
-		         test_07_cart_cache_coherence; do \
+		         test_07_cart_cache_coherence test_08_rate_limit_state_loss; do \
 			if python $$t.py >/dev/null 2>&1; then \
 				echo "  PASS  $$t"; pass=$$((pass+1)); \
 			else \

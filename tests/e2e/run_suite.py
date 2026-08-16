@@ -30,6 +30,7 @@ TESTS = [
     "test_05_auxiliary_services",
     "test_06_intra_mesh_connectivity",
     "test_07_cart_cache_coherence",
+    "test_08_rate_limit_state_loss",
 ]
 
 

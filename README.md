@@ -27,7 +27,8 @@ under concurrency or failure:
 
 - inventory reservation and the cart checkout mutex
 - saga transitions, and payment charge and refund decisions
-- gateway rate limiting, and cart cache coherence
+- gateway rate limiting, and what survives losing Redis: a cart rehydrates
+  from Postgres, a rate-limit budget cannot
 - media quarantine, audit chain integrity, webhook deduplication, notification
   retry policy, DLQ recovery, and reindex field ownership
 - CDC connector configuration: slot uniqueness, the event-type header, and
@@ -71,7 +72,7 @@ Three tiers, deliberately separated by what they need to run.
 | `services/api-gateway/test` | Rate limit tiering and exemptions | nothing | 24 |
 | `shared/libs/node-common/test` | Read-model field ownership, Node side | nothing | 18 |
 | `tests/integration` | Behaviour under real parallel load | running stack | 4 |
-| `tests/e2e` | The platform end to end | running stack | 7 |
+| `tests/e2e` | The platform end to end | running stack | 8 |
 
 ```bash
 python -m pytest tests/unit -q
@@ -105,8 +106,8 @@ Two workflows, in [.github/workflows](.github/workflows):
 - **CI** — all three dependency-free tiers (Python units, the gateway's, and the
   shared Node library's), on every push and pull request. ~15 seconds.
 - **Stack tests** — boots a six-container slice (postgres, redis, cart-service,
-  inventory-service, api-gateway, audit-service) and runs the cart cache e2e
-  test plus all four concurrency checks. ~1m30s.
+  inventory-service, api-gateway, audit-service) and runs the two state-loss
+  e2e tests plus all four concurrency checks. ~1m40s.
 
 `test_01` through `test_06` are not in CI. They drive the CQRS pipeline and the
 saga, so they need most of the platform, and a GitHub-hosted runner on a private
