@@ -239,3 +239,80 @@ def test_detection_terminates_on_a_self_referential_cause():
     e = Loop()
     e.orig = e
     assert is_lock_contention(e) is False
+
+
+# ---------------------------------------------------------------------------
+# release: the inverse of a reservation (§5)
+# ---------------------------------------------------------------------------
+
+plan_release = reservation_rules.plan_release
+ReleaseOutcome = reservation_rules.ReleaseOutcome
+
+
+def test_release_returns_units_to_available():
+    plan = plan_release(StockLevel(quantity_available=7, quantity_reserved=3), held=3)
+    assert plan.released
+    assert plan.new_level.quantity_available == 10
+    assert plan.new_level.quantity_reserved == 0
+
+
+def test_release_conserves_total_stock():
+    # The same invariant the reservation side asserts: units move between
+    # columns, they are never created or destroyed.
+    before = StockLevel(quantity_available=7, quantity_reserved=3)
+    plan = plan_release(before, held=2)
+    assert plan.new_level.total == before.total
+
+
+def test_releasing_nothing_is_a_success():
+    # §5: a compensating command must succeed as a no-op when the forward step
+    # never took effect. After a timeout at INVENTORY_RESERVED it is unknowable
+    # whether the reservation landed, so both legs are compensated
+    # unconditionally -- an error here would strand every such saga.
+    plan = plan_release(StockLevel(quantity_available=5, quantity_reserved=0), held=0)
+    assert plan.outcome is ReleaseOutcome.NOTHING_HELD
+    assert plan.new_level is None
+    assert plan.event == reservation_rules.EVENT_RELEASED
+
+
+def test_releasing_against_a_missing_product_is_a_no_op():
+    # Nothing can be credited to a row that is gone, and inventing one is the
+    # backdoor plan_reservation refuses.
+    plan = plan_release(None, held=3)
+    assert plan.outcome is ReleaseOutcome.NOTHING_HELD
+
+
+def test_release_cannot_invent_stock():
+    # The ledger claims more than the row holds. Returning the excess would
+    # create units nobody ever took, and an oversell is worse than an
+    # under-release.
+    plan = plan_release(StockLevel(quantity_available=1, quantity_reserved=2), held=5)
+    assert plan.released
+    assert plan.new_level.quantity_reserved == 0
+    assert plan.new_level.quantity_available == 3
+    assert plan.new_level.total == 3
+    assert "only 2 was reserved" in plan.detail
+
+
+def test_a_negative_held_quantity_is_refused():
+    plan = plan_release(StockLevel(quantity_available=5, quantity_reserved=5), held=-1)
+    assert plan.outcome is ReleaseOutcome.INVALID
+    assert plan.new_level is None
+
+
+def test_release_is_the_exact_inverse_of_reserve():
+    # Reserve then release must land back where it started, which is the whole
+    # point of declaring an inverse.
+    start = StockLevel(quantity_available=10, quantity_reserved=0)
+    reserved = plan_reservation(start, 4)
+    assert reserved.reserved
+    back = plan_release(reserved.new_level, held=4)
+    assert back.new_level.quantity_available == start.quantity_available
+    assert back.new_level.quantity_reserved == start.quantity_reserved
+
+
+def test_release_emits_the_event_order_saga_expects():
+    # Both events must be known to order-saga or the step is answered 422 and
+    # dead-lettered.
+    plan = plan_release(StockLevel(quantity_available=0, quantity_reserved=1), held=1)
+    assert plan.event == "InventoryReleased"

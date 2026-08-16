@@ -196,6 +196,32 @@ data:
     \ created, once a minute, forever.\nCREATE INDEX IF NOT EXISTS ix_cart_state_status_updated_at\n \
     \   ON public.cart_state (status, updated_at);\n\nCREATE INDEX IF NOT EXISTS ix_cart_state_status_expires_at\n\
     \    ON public.cart_state (status, expires_at);\n"
+  011_inventory_db_reservations.sql: "-- 011 (inventory_db): a ledger of what each order actually holds\n\
+    --\n-- \xA75 declares ReleaseInventoryCommand as the inverse of ReserveInventoryCommand,\n-- and the\
+    \ platform could not perform it, because nothing recorded which units\n-- belonged to which order.\
+    \ inventory_items carries two counters and no history;\n-- order_saga_states has no items column.\
+    \ So neither side could answer \"what\n-- should this order give back\", and the dispatcher settled\
+    \ the compensation by\n-- acknowledging it to itself without calling anyone. 75 rows holding 88 units\n\
+    -- were stranded that way, and every failed order leaked more.\n--\n-- The ledger lives here rather\
+    \ than in the saga because inventory owns stock\n-- (Rule 1). It also makes the blind-compensation\
+    \ contract in \xA75 fall out for\n-- free: releasing an order that never reserved matches no rows,\
+    \ which is a\n-- no-op and a success rather than an error.\n--\n-- Rule 10: run as a Job or InitContainer,\
+    \ never in the app startup path.\n--   psql -U admin -d inventory_db -f migrations/011_inventory_db_reservations.sql\n\
+    --\n-- Idempotent.\n\nCREATE TABLE IF NOT EXISTS public.inventory_reservations (\n    id         \
+    \ uuid        NOT NULL PRIMARY KEY DEFAULT gen_random_uuid(),\n    -- Text, not uuid: the saga's order\
+    \ id arrives as a string and a\n    -- compensation must never fail on a cast.\n    order_id    text\
+    \        NOT NULL,\n    product_id  uuid        NOT NULL,\n    quantity    integer     NOT NULL CHECK\
+    \ (quantity > 0),\n    -- held -> released. Rows are never deleted: an audit of what was returned\n\
+    \    -- is worth more than the space, and a deleted row is indistinguishable\n    -- from one that\
+    \ never existed.\n    status      text        NOT NULL DEFAULT 'held'\n                          \
+    \  CHECK (status IN ('held', 'released')),\n    created_at  timestamptz NOT NULL DEFAULT NOW(),\n\
+    \    released_at timestamptz\n);\n\n-- One live hold per order and product. Delivery is at-least-once,\
+    \ so the same\n-- ReserveInventoryCommand can arrive twice; without this the second delivery\n-- would\
+    \ record a second hold and the release would give back twice what was\n-- taken. Partial, so the released\
+    \ history does not block a later re-reservation.\nCREATE UNIQUE INDEX IF NOT EXISTS ux_inventory_reservations_live\n\
+    \    ON public.inventory_reservations (order_id, product_id)\n    WHERE status = 'held';\n\n-- The\
+    \ release path looks up by order alone.\nCREATE INDEX IF NOT EXISTS ix_inventory_reservations_order\n\
+    \    ON public.inventory_reservations (order_id, status);\n"
 
 ---
 apiVersion: batch/v1

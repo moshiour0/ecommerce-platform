@@ -13,6 +13,28 @@ class InventoryItem(Base):
     quantity_reserved = Column(Integer, nullable=False, default=0)
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
+class InventoryReservation(Base):
+    """What a given order is holding, so it can be given back.
+
+    Neither inventory_items nor order_saga_states recorded this, which is why
+    ReleaseInventoryCommand could not be implemented and the dispatcher
+    acknowledged it to itself instead. See migration 011.
+    """
+
+    __tablename__ = "inventory_reservations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # Text: the saga's order id arrives as a string, and a compensation must
+    # never fail on a cast.
+    order_id = Column(String(255), nullable=False, index=True)
+    product_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    quantity = Column(Integer, nullable=False)
+    status = Column(String(32), nullable=False, default="held")
+    created_at = Column(DateTime(timezone=True),
+                        default=lambda: datetime.now(timezone.utc))
+    released_at = Column(DateTime(timezone=True), nullable=True)
+
+
 class OutboxMessage(Base):
     __tablename__ = "outbox_messages"
 

@@ -228,9 +228,13 @@ async def handle(msg_id, msg_type: str, payload: dict) -> bool:
             return await _advance_saga(order_id, "InventoryReservationFailed",
                                        f"inv-fail-{msg_id}", {"reason": "EmptyItemsPayload"})
         item = items[0]
+        # order_id makes the hold releasable. Without it the units are
+        # reserved and nothing can give them back, which is the state every
+        # reservation was in before migration 011.
         res = await _post("inventory-service", f"{INVENTORY_URL}/reserve",
                           {"product_id": item.get("product_id"),
-                           "quantity": item.get("quantity", 1)}, idem)
+                           "quantity": item.get("quantity", 1),
+                           "order_id": order_id}, idem)
         if res.status_code == 200:
             return await _advance_saga(order_id, "InventoryReserved", f"inv-res-{msg_id}")
         # 409 out of stock / 404 unknown product are business outcomes with
@@ -263,7 +267,20 @@ async def handle(msg_id, msg_type: str, payload: dict) -> bool:
         return False  # never abandon an outstanding refund
 
     if msg_type in ("ReleaseInventoryCommand", "CompensateInventoryCommand"):
-        return await _advance_saga(order_id, "InventoryReleased", f"inv-rel-{msg_id}")
+        # inventory-service treats an order holding nothing as a no-op and
+        # returns 200, so this is safe to issue unconditionally -- which the
+        # reaper does, because at INVENTORY_RESERVED it cannot know whether the
+        # reservation landed before the acknowledgement dropped (§5).
+        #
+        # This used to advance the saga without calling anyone, so a rollback
+        # completed while the units stayed reserved forever.
+        res = await _post("inventory-service", f"{INVENTORY_URL}/release",
+                          {"order_id": order_id}, idem)
+        if res.status_code == 200:
+            return await _advance_saga(order_id, "InventoryReleased", f"inv-rel-{msg_id}")
+        logger.error(f"Inventory release failed: order={order_id} "
+                     f"status={res.status_code}")
+        return False  # never abandon an outstanding release
 
     if msg_type == "ConfirmOrderCommand":
         return await _advance_saga(order_id, "OrderCompleted", f"ord-cmp-{msg_id}")

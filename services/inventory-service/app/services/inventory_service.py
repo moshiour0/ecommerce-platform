@@ -4,10 +4,13 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from fastapi import HTTPException
-from ..models import InventoryItem, OutboxMessage, IdempotencyKey
-from ..schemas import ReserveRequest
+from ..models import (
+    IdempotencyKey, InventoryItem, InventoryReservation, OutboxMessage,
+)
+from ..schemas import ReleaseRequest, ReserveRequest
 from .reservation_rules import (
-    ReservationOutcome, StockLevel, is_lock_contention, plan_reservation,
+    ReleaseOutcome, ReservationOutcome, StockLevel, is_lock_contention,
+    plan_release, plan_reservation,
 )
 
 logger = logging.getLogger(__name__)
@@ -114,6 +117,19 @@ async def reserve_inventory(db: AsyncSession, request: ReserveRequest, idempoten
     inventory_item.quantity_available = plan.new_level.quantity_available
     inventory_item.quantity_reserved = plan.new_level.quantity_reserved
 
+    # Record what this order is holding, in the same transaction as the units
+    # moving. Without it nothing knows what to give back, which is why
+    # ReleaseInventoryCommand was a no-op the dispatcher acknowledged to
+    # itself. An order_id is optional -- the contention check reserves without
+    # a saga -- and those units are simply not releasable by order.
+    if request.order_id:
+        db.add(InventoryReservation(
+            order_id=request.order_id,
+            product_id=inventory_item.product_id,
+            quantity=request.quantity,
+            status="held",
+        ))
+
     # Create OutboxMessage
     payload = {
         "id": str(inventory_item.id),
@@ -146,3 +162,99 @@ async def reserve_inventory(db: AsyncSession, request: ReserveRequest, idempoten
         raise HTTPException(status_code=500, detail=str(e))
 
     return inventory_item
+
+
+async def release_inventory(db: AsyncSession, request: ReleaseRequest,
+                            idempotency_key: str) -> dict:
+    """Return everything an order is holding. The inverse of reserve (§5).
+
+    Idempotent by construction rather than by an idempotency key: rows are
+    matched on status='held', so a second release finds nothing and succeeds
+    as a no-op. That matters because the reaper issues this unconditionally --
+    at INVENTORY_RESERVED it cannot know whether the reservation landed before
+    the acknowledgement dropped, so both legs are compensated blind (§5).
+
+    An order that never reserved matches no rows and is also a success. A
+    release that errored on "nothing to release" would strand every saga that
+    timed out before reserving.
+    """
+    result = await db.execute(
+        select(InventoryReservation)
+        .where(InventoryReservation.order_id == request.order_id)
+        .where(InventoryReservation.status == "held")
+    )
+    holds = list(result.scalars().all())
+
+    if not holds:
+        logger.info("release: order %s holds nothing", request.order_id)
+        return {"order_id": request.order_id, "released": 0, "reservations": 0,
+                "detail": "no live reservation; nothing to return"}
+
+    released_units = 0
+    details = []
+
+    for hold in holds:
+        # Same pessimistic lock as the reserve path: releasing races with
+        # buyers of the same product, and both sides must serialise on the row.
+        try:
+            item_result = await db.execute(
+                select(InventoryItem)
+                .where(InventoryItem.product_id == hold.product_id)
+                .with_for_update()
+            )
+        except Exception as exc:
+            if not is_lock_contention(exc):
+                raise
+            await db.rollback()
+            logger.warning("release: row contended for product=%s", hold.product_id)
+            raise HTTPException(status_code=409,
+                                detail="Inventory row is contended; retry shortly")
+
+        item = item_result.scalar_one_or_none()
+        plan = plan_release(
+            StockLevel(item.quantity_available, item.quantity_reserved)
+            if item else None,
+            hold.quantity,
+        )
+
+        if plan.outcome is ReleaseOutcome.INVALID:
+            await db.rollback()
+            raise HTTPException(status_code=400, detail=plan.detail)
+
+        if plan.released:
+            item.quantity_available = plan.new_level.quantity_available
+            item.quantity_reserved = plan.new_level.quantity_reserved
+            released_units += hold.quantity
+
+            db.add(OutboxMessage(
+                aggregate_type="Inventory",
+                aggregate_id=str(hold.product_id),
+                type=plan.event,
+                payload={
+                    "id": str(item.id),
+                    "order_id": hold.order_id,
+                    "product_id": str(hold.product_id),
+                    "quantity_released": hold.quantity,
+                    "total_quantity_available": item.quantity_available,
+                    "total_quantity_reserved": item.quantity_reserved,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            ))
+
+        # Settled either way: a hold against a product row that no longer
+        # exists cannot be returned, and leaving it 'held' would make every
+        # future release retry it forever.
+        hold.status = "released"
+        hold.released_at = datetime.now(timezone.utc)
+        details.append(plan.detail)
+
+    try:
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    logger.info("release: order %s returned %s unit(s) across %s reservation(s)",
+                request.order_id, released_units, len(holds))
+    return {"order_id": request.order_id, "released": released_units,
+            "reservations": len(holds), "detail": "; ".join(details)}

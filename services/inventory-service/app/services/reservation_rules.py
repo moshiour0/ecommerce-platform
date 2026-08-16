@@ -100,6 +100,81 @@ def plan_reservation(level: Optional[StockLevel], requested: int) -> Reservation
     )
 
 
+# ---------------------------------------------------------------------------
+# release -- the inverse of a reservation (§5)
+# ---------------------------------------------------------------------------
+
+class ReleaseOutcome(str, Enum):
+    RELEASED = "released"      # units moved back to available
+    NOTHING_HELD = "nothing"   # no live reservation: a no-op, and a success
+    INVALID = "invalid"        # non-positive quantity recorded
+
+
+@dataclass(frozen=True)
+class ReleasePlan:
+    outcome: ReleaseOutcome
+    new_level: Optional[StockLevel]
+    event: Optional[str]
+    detail: str
+
+    @property
+    def released(self) -> bool:
+        return self.outcome is ReleaseOutcome.RELEASED
+
+
+EVENT_RELEASED = "InventoryReleased"
+
+
+def plan_release(level: Optional[StockLevel], held: int) -> ReleasePlan:
+    """Return `held` units from reserved to available.
+
+    `held` is what the reservation ledger says this order is holding, not what
+    a caller asked to release. A compensation must not be able to invent stock
+    by asking for more than was taken.
+
+    Nothing held is success, not failure. §5 requires a compensating command to
+    succeed as a no-op when the forward step never took effect, because after a
+    timeout at INVENTORY_RESERVED it is unknowable whether the reservation
+    landed, and both legs are compensated unconditionally. A release that
+    errored on "no reservation" would strand every saga that timed out before
+    reserving.
+    """
+    if held == 0:
+        return ReleasePlan(ReleaseOutcome.NOTHING_HELD, None, EVENT_RELEASED,
+                           "no live reservation; nothing to return")
+
+    if held < 0:
+        return ReleasePlan(ReleaseOutcome.INVALID, None, None,
+                           f"held quantity must not be negative, got {held}")
+
+    if level is None:
+        # The ledger says units are held against a product row that no longer
+        # exists. Nothing can be credited back to a row that is gone, and
+        # inventing one is exactly the backdoor plan_reservation refuses.
+        return ReleasePlan(ReleaseOutcome.NOTHING_HELD, None, EVENT_RELEASED,
+                           "no inventory record for this product")
+
+    # Clamp rather than trust. If the ledger claims more than the row has
+    # reserved, something has already drifted; returning the excess would
+    # create stock that was never taken, and an oversell is worse than an
+    # under-release. The discrepancy is reported rather than hidden.
+    releasable = min(held, level.quantity_reserved)
+    detail = f"released {releasable}"
+    if releasable < held:
+        detail += (f" (ledger claimed {held} but only "
+                   f"{level.quantity_reserved} was reserved)")
+
+    return ReleasePlan(
+        ReleaseOutcome.RELEASED,
+        StockLevel(
+            quantity_available=level.quantity_available + releasable,
+            quantity_reserved=level.quantity_reserved - releasable,
+        ),
+        EVENT_RELEASED,
+        detail,
+    )
+
+
 # PostgreSQL SQLSTATE 55P03: lock_not_available. Raised when a
 # SELECT ... FOR UPDATE waits longer than lock_timeout (Rule 11 sets 3s).
 SQLSTATE_LOCK_NOT_AVAILABLE = "55P03"

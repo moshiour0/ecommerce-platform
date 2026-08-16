@@ -111,11 +111,18 @@ def test_charge_and_refund_use_different_success_codes():
     assert route_for("RefundPaymentCommand").success_status == 200
 
 
-def test_only_refund_declines_to_settle_on_failure():
-    """Any other command that stopped settling would spin against a real
-    failure, so this exemption must stay deliberate and narrow."""
+def test_only_compensations_decline_to_settle_on_failure():
+    """An unfinished compensation must be retried, never reported as done.
+
+    A forward step that fails has a saga transition to fall into; a
+    compensation that fails has nowhere to go, and settling it would leave
+    money uncredited or stock unreturned while the saga believes the rollback
+    completed. Any command outside this set that stopped settling would spin
+    against a real failure, so the exemption stays deliberate and narrow.
+    """
     non_settling = {c for c, r in ROUTES.items() if not r.settle_on_failure}
-    assert non_settling == {"RefundPaymentCommand"}
+    assert non_settling == {"RefundPaymentCommand", "ReleaseInventoryCommand",
+                            "CompensateInventoryCommand"}
 
 
 # ---------------------------------------------------------------------------
@@ -148,9 +155,27 @@ def test_saga_timeout_settles_without_emitting_anything():
     assert r.target is None, "SagaTimedOut needs no downstream call"
 
 
-def test_compensation_acks_need_no_downstream_call():
-    for cmd in ("ReleaseInventoryCommand", "CompensateInventoryCommand", "ConfirmOrderCommand"):
-        assert route_for(cmd).target is None, f"{cmd} should not call a service"
+def test_inventory_release_actually_calls_inventory():
+    """The inverse of a reservation has to reach the service holding the stock.
+
+    Both spellings used to be self-acknowledgements -- target None, straight to
+    InventoryReleased -- so a rollback completed while inventory-service still
+    held the units. 75 rows and 88 units were stranded that way before this was
+    a call.
+    """
+    for cmd in ("ReleaseInventoryCommand", "CompensateInventoryCommand"):
+        route = route_for(cmd)
+        assert route.target == "inventory-service", f"{cmd} must call inventory"
+        assert route.success_status == 200
+        assert route.on_failure is None, (
+            f"{cmd} must not report a failure event; an unreturned reservation "
+            f"is retried, not recorded as a completed compensation")
+
+
+def test_order_confirmation_needs_no_downstream_call():
+    """Unlike the compensations, this one really is an acknowledgement: the
+    saga's own terminal transition is the whole effect."""
+    assert route_for("ConfirmOrderCommand").target is None
 
 
 def test_both_inventory_release_spellings_map_to_one_event():

@@ -94,9 +94,22 @@ ROUTES: dict[str, Route] = {
         # refund must not be abandoned because the provider was briefly down.
         on_failure=None, settle_on_failure=False),
 
-    # Compensation acknowledgements: the dispatcher confirms them directly.
-    "ReleaseInventoryCommand":    Route(None, None, "InventoryReleased", None),
-    "CompensateInventoryCommand": Route(None, None, "InventoryReleased", None),
+    # The inverse of ReserveInventoryCommand (§5). This used to be a
+    # self-acknowledgement -- target None, straight to InventoryReleased --
+    # so the saga reached ROLLBACK_COMPLETED believing stock had been returned
+    # while inventory-service still held it. 75 rows and 88 units were stranded
+    # that way, and every failed order leaked more.
+    "ReleaseInventoryCommand":    Route(
+        target="inventory-service", success_status=200,
+        on_success="InventoryReleased",
+        # No failure event: an unreturned reservation must be retried, not
+        # reported as a compensation that completed. Same reasoning as the
+        # refund leg.
+        on_failure=None, settle_on_failure=False),
+    "CompensateInventoryCommand": Route(
+        target="inventory-service", success_status=200,
+        on_success="InventoryReleased",
+        on_failure=None, settle_on_failure=False),
     "ConfirmOrderCommand":        Route(None, None, "OrderCompleted", None),
 
     # Emitted by the reaper when a PENDING saga times out with nothing to
