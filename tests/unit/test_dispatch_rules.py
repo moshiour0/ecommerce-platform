@@ -273,3 +273,146 @@ def test_dispatcher_source_handles_every_command_in_the_table():
 
     missing = [c for c in commands_handled() if f'"{c}"' not in src]
     assert not missing, f"ROUTES declares commands main.py never checks: {sorted(missing)}"
+
+
+# ---------------------------------------------------------------------------
+# reservation planning: the multi-item bug
+# ---------------------------------------------------------------------------
+
+plan_item_reservations = dispatch_rules.plan_item_reservations
+reservation_idempotency_key = dispatch_rules.reservation_idempotency_key
+
+# The real shape, copied from order_db.outbox_messages.
+THREE_LINES = [
+    {"product_id": "p-c", "quantity": 1, "price_cents": 15000,
+     "line_total_cents": 15000},
+    {"product_id": "p-a", "quantity": 2, "price_cents": 500,
+     "line_total_cents": 1000},
+    {"product_id": "p-b", "quantity": 3, "price_cents": 100,
+     "line_total_cents": 300},
+]
+
+
+def test_every_line_is_reserved():
+    # The bug: the dispatcher read items[0] and reserved that one line. A
+    # three-item order held stock for one product and charged for three.
+    plan = plan_item_reservations(THREE_LINES)
+    assert plan.ok
+    assert len(plan.items) == 3
+    assert {i.product_id for i in plan.items} == {"p-a", "p-b", "p-c"}
+
+
+def test_quantities_are_preserved_per_line():
+    plan = plan_item_reservations(THREE_LINES)
+    quantities = {i.product_id: i.quantity for i in plan.items}
+    assert quantities == {"p-a": 2, "p-b": 3, "p-c": 1}
+
+
+def test_duplicate_products_are_coalesced():
+    # The reservation ledger has a unique index on (order_id, product_id) for
+    # live holds, so two reservations for one product in one order would be
+    # refused by the database -- and a release would return only one of them.
+    plan = plan_item_reservations([
+        {"product_id": "p-a", "quantity": 2},
+        {"product_id": "p-a", "quantity": 3},
+    ])
+    assert plan.ok
+    assert len(plan.items) == 1
+    assert plan.items[0].quantity == 5
+
+
+def test_items_are_ordered_deterministically():
+    # A retried command must reserve in the same sequence as the original, so
+    # the per-item idempotency keys line up.
+    first = plan_item_reservations(THREE_LINES).items
+    shuffled = plan_item_reservations(list(reversed(THREE_LINES))).items
+    assert [i.product_id for i in first] == [i.product_id for i in shuffled]
+    assert [i.product_id for i in first] == ["p-a", "p-b", "p-c"]
+
+
+def test_a_single_line_still_works():
+    plan = plan_item_reservations([{"product_id": "p-a", "quantity": 1}])
+    assert plan.ok and len(plan.items) == 1
+
+
+def test_a_missing_quantity_defaults_to_one():
+    plan = plan_item_reservations([{"product_id": "p-a"}])
+    assert plan.ok and plan.items[0].quantity == 1
+
+
+# ---------------------------------------------------------------------------
+# malformed orders are rejected whole
+# ---------------------------------------------------------------------------
+
+def test_an_empty_payload_is_refused():
+    for payload in ([], {}, None, "", 0):
+        assert plan_item_reservations(payload).error == "EmptyItemsPayload"
+
+
+def test_a_line_without_a_product_is_refused():
+    # Reserving the lines that happen to parse would leave stock held against
+    # an order that can never complete.
+    plan = plan_item_reservations([
+        {"product_id": "p-a", "quantity": 1},
+        {"quantity": 2},
+    ])
+    assert not plan.ok
+    assert plan.items == []
+
+
+def test_a_non_positive_quantity_is_refused():
+    for bad in (0, -1):
+        plan = plan_item_reservations([{"product_id": "p-a", "quantity": bad}])
+        assert not plan.ok
+        assert "NonPositive" in plan.error
+
+
+def test_a_non_integer_quantity_is_refused():
+    # Rule 6 is about money, but a fractional unit of stock is the same class
+    # of mistake.
+    for bad in ("2", 2.5, None, [], True):
+        plan = plan_item_reservations([{"product_id": "p-a", "quantity": bad}])
+        assert not plan.ok, f"{bad!r} was accepted"
+
+
+def test_a_malformed_entry_is_refused():
+    assert not plan_item_reservations(["just a string"]).ok
+
+
+# ---------------------------------------------------------------------------
+# payload shapes the saga has used
+# ---------------------------------------------------------------------------
+
+def test_the_wrapped_shape_is_understood():
+    plan = plan_item_reservations({"items": [{"product_id": "p-a", "quantity": 2}]})
+    assert plan.ok and plan.items[0].quantity == 2
+
+
+def test_the_mapping_shape_is_understood():
+    # cart-service stores a cart as {product_id: quantity}.
+    plan = plan_item_reservations({"p-a": 2, "p-b": 1})
+    assert plan.ok
+    assert {i.product_id: i.quantity for i in plan.items} == {"p-a": 2, "p-b": 1}
+
+
+# ---------------------------------------------------------------------------
+# idempotency keys
+# ---------------------------------------------------------------------------
+
+def test_each_product_gets_its_own_key():
+    # One key for the whole command would make the second line's reserve look
+    # like a retry of the first, and inventory-service would return the first
+    # line's cached result instead of reserving anything.
+    a = reservation_idempotency_key("msg-1", "p-a")
+    b = reservation_idempotency_key("msg-1", "p-b")
+    assert a != b
+
+
+def test_the_key_is_stable_across_retries():
+    # A redelivered command must reuse the same keys, so inventory-service
+    # recognises the retry rather than reserving twice.
+    assert reservation_idempotency_key("msg-1", "p-a") ==         reservation_idempotency_key("msg-1", "p-a")
+
+
+def test_different_commands_get_different_keys():
+    assert reservation_idempotency_key("msg-1", "p-a") !=         reservation_idempotency_key("msg-2", "p-a")

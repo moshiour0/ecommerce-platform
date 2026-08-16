@@ -19,7 +19,7 @@ expensive:
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Any, List, Optional
 
 
 class SagaAck(str, Enum):
@@ -70,6 +70,96 @@ class Route:
     on_success: Optional[str]      # saga event emitted on success
     on_failure: Optional[str]      # saga event emitted on failure
     settle_on_failure: bool = True # False = retry instead of reporting failure
+
+
+# ---------------------------------------------------------------------------
+# reservation planning
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ItemReservation:
+    product_id: str
+    quantity: int
+
+
+@dataclass(frozen=True)
+class ReservationPlan:
+    items: List[ItemReservation]
+    error: Optional[str]  # None when the plan is usable
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
+
+
+def plan_item_reservations(items_payload: Any) -> ReservationPlan:
+    """Turn a saga's items_payload into the reservations to make.
+
+    This exists because the dispatcher used to read `items[0]` and reserve that
+    one line. A three-item order held stock for one product and was charged for
+    three, and nothing failed -- the saga completed, the customer paid, and two
+    of the three products were never reserved.
+
+    Three things happen here, and each is a rule rather than a formatting step:
+
+    * Duplicates are coalesced. Two lines for the same product become one
+      reservation for the sum. The reservation ledger has a unique index on
+      (order_id, product_id) for live holds, so two separate reservations for
+      one product in one order would be rejected by the database -- and a
+      release would return only one of them.
+
+    * Items are sorted by product id. Each reserve is its own transaction today,
+      so this is not currently deadlock avoidance; it is determinism. A retried
+      command reserves in the same sequence as the original, which makes the
+      idempotency keys line up and makes a partial failure reproducible. If the
+      reserves ever move into one transaction, the ordering is already right.
+
+    * Anything unusable is rejected as a whole rather than partially reserved.
+      A missing product id or a non-positive quantity means the order is
+      malformed, and reserving the lines that happen to parse would leave stock
+      held against an order that can never complete.
+    """
+    items = items_payload
+    # The saga accepts a list or a dict, and cart-service once wrapped it.
+    if isinstance(items, dict):
+        items = items.get("items", items)
+    if isinstance(items, dict):
+        # {product_id: quantity}
+        items = [{"product_id": k, "quantity": v} for k, v in items.items()]
+    if not isinstance(items, list) or not items:
+        return ReservationPlan([], "EmptyItemsPayload")
+
+    totals: dict = {}
+    for entry in items:
+        if not isinstance(entry, dict):
+            return ReservationPlan([], f"MalformedItem: {entry!r}")
+
+        product_id = entry.get("product_id")
+        if not product_id:
+            return ReservationPlan([], "ItemMissingProductId")
+
+        quantity = entry.get("quantity", 1)
+        if isinstance(quantity, bool) or not isinstance(quantity, int):
+            return ReservationPlan([], f"NonIntegerQuantity: {quantity!r}")
+        if quantity <= 0:
+            return ReservationPlan([], f"NonPositiveQuantity: {quantity}")
+
+        totals[str(product_id)] = totals.get(str(product_id), 0) + quantity
+
+    return ReservationPlan(
+        [ItemReservation(pid, qty) for pid, qty in sorted(totals.items())],
+        None,
+    )
+
+
+def reservation_idempotency_key(message_id: Any, product_id: str) -> str:
+    """One key per (command, product).
+
+    A single key for the whole command would make the second line's reserve
+    look like a retry of the first, and inventory-service would return the
+    first line's cached result instead of reserving anything.
+    """
+    return f"{message_id}:{product_id}"
 
 
 # Commands order-saga can emit, and what the dispatcher does with each.

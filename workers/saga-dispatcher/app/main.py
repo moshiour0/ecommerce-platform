@@ -49,6 +49,7 @@ from python_common.resilience import (
 )
 from python_common.tracing import get_tracer, setup_tracing, start_consumer_span
 from .dispatch_rules import (
+    plan_item_reservations, reservation_idempotency_key,
     SagaAck, classify_saga_response, route_for, settles,
 )
 
@@ -221,28 +222,59 @@ async def handle(msg_id, msg_type: str, payload: dict) -> bool:
     idem = str(msg_id)
 
     if msg_type == "ReserveInventoryCommand":
-        items = payload.get("items_payload", [])
-        if isinstance(items, dict) and "items" in items:
-            items = items["items"]
-        if not items:
+        # Every line, not just the first. This read items[0] and reserved that
+        # one product, so a three-item order held stock for one and charged for
+        # three -- and nothing failed anywhere, because the saga only ever
+        # asked about the reservation it made.
+        plan = plan_item_reservations(payload.get("items_payload", []))
+        if not plan.ok:
             return await _advance_saga(order_id, "InventoryReservationFailed",
-                                       f"inv-fail-{msg_id}", {"reason": "EmptyItemsPayload"})
-        item = items[0]
-        # order_id makes the hold releasable. Without it the units are
-        # reserved and nothing can give them back, which is the state every
-        # reservation was in before migration 011.
-        res = await _post("inventory-service", f"{INVENTORY_URL}/reserve",
-                          {"product_id": item.get("product_id"),
-                           "quantity": item.get("quantity", 1),
-                           "order_id": order_id}, idem)
-        if res.status_code == 200:
-            return await _advance_saga(order_id, "InventoryReserved", f"inv-res-{msg_id}")
-        # 409 out of stock / 404 unknown product are business outcomes with
-        # their own saga transition, not transport failures.
-        return await _advance_saga(order_id, "InventoryReservationFailed",
-                                   f"inv-fail-{msg_id}",
-                                   {"reason": "InsufficientStock",
-                                    "status_code": res.status_code})
+                                       f"inv-fail-{msg_id}",
+                                       {"reason": plan.error})
+
+        # All-or-nothing. Reserves are separate HTTP calls and cannot share a
+        # transaction, so partial success is possible and must be undone:
+        # stock held for an order that will never complete is exactly the leak
+        # ReleaseInventoryCommand exists to prevent. /release works by order_id
+        # and settles whatever is held, so one call cleans up any prefix.
+        for reservation in plan.items:
+            res = await _post(
+                "inventory-service", f"{INVENTORY_URL}/reserve",
+                {"product_id": reservation.product_id,
+                 "quantity": reservation.quantity,
+                 # order_id is what makes the hold releasable at all.
+                 "order_id": order_id},
+                reservation_idempotency_key(msg_id, reservation.product_id))
+
+            if res.status_code == 200:
+                continue
+
+            # 409 out of stock / 404 unknown product are business outcomes with
+            # their own saga transition, not transport failures.
+            logger.warning(
+                f"Reservation failed for order={order_id} "
+                f"product={reservation.product_id} status={res.status_code}; "
+                f"releasing {len(plan.items)} line(s)")
+
+            rollback = await _post("inventory-service", f"{INVENTORY_URL}/release",
+                                   {"order_id": order_id}, f"inv-rb-{msg_id}")
+            if rollback.status_code != 200:
+                # Do not settle. Reporting the failure now would let the saga
+                # roll forward while units from the successful lines stay held,
+                # and the release would never be retried.
+                logger.error(
+                    f"Could not release partial reservation for order={order_id} "
+                    f"(status={rollback.status_code}); leaving command unsettled")
+                return False
+
+            return await _advance_saga(order_id, "InventoryReservationFailed",
+                                       f"inv-fail-{msg_id}",
+                                       {"reason": "InsufficientStock",
+                                        "product_id": reservation.product_id,
+                                        "status_code": res.status_code})
+
+        logger.info(f"Reserved {len(plan.items)} line(s) for order={order_id}")
+        return await _advance_saga(order_id, "InventoryReserved", f"inv-res-{msg_id}")
 
     if msg_type == "ChargePaymentCommand":
         res = await _post("payment-service", f"{PAYMENT_URL}/charge",

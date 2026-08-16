@@ -23,10 +23,11 @@ the expensive part to change later.
 
 **What you have is also about 10% of a marketplace, and single-tenant.** Every
 model assumes one seller: products have no owner, inventory has no warehouse,
-orders cannot be split, and there is no concept of a payout. Checkout reserves
-only the first line item (`saga-dispatcher/app/main.py:230` — `item = items[0]`).
-Tax, promotions, fraud and delivery quoting are 200-line placeholders. Nothing
-is deployed.
+orders cannot be split, and there is no concept of a payout. Tax, promotions,
+fraud and delivery quoting are 200-line placeholders. Nothing is deployed.
+
+(Multi-item checkout was on this list until 2026-08-16, when the dispatcher was
+reserving only the first line of every order. It is fixed and tested.)
 
 So this plan is not "add features". Phases 0 and 1 are largely a **re-modelling**
 of what exists, and that is normal: single-tenant to multi-tenant is the most
@@ -460,7 +461,6 @@ scope hard. These are not padded; marketplaces take this long.
 
 Fix what is already broken before building on it.
 
-- Multi-item checkout (currently reserves only the first line)
 - Real authentication: registration, login, sessions, password reset
 - Replace the simulated payment service with a real PSP in sandbox
 - mTLS and a secret manager
@@ -532,18 +532,16 @@ Concrete, small, and each one buys information or removes risk:
 
 1. **Decide D1, D2 and D3 in writing** and add them to
    `ARCHITECTURE_STATE_FINAL.md`. Half a day, and it determines a year of work.
-2. **Fix multi-item checkout.** A genuine bug, contained, and it forces you to
-   think about how order lines behave before sellers make it harder.
-3. **Add `seller_id` to products** behind a nullable column with a default
+2. **Add `seller_id` to products** behind a nullable column with a default
    seller. It is the smallest possible step into multi-tenancy and it surfaces
    every place that assumes one seller.
-4. **Add the Media Center seam** from §3.6 — the `purpose` column, the event
+3. **Add the Media Center seam** from §3.6 — the `purpose` column, the event
    contracts in the architecture document, the reserved ports. One afternoon.
-5. **Set Kafka to RF=3 and give Redis a replica** in the compose file, so your
+4. **Set Kafka to RF=3 and give Redis a replica** in the compose file, so your
    local environment stops teaching you habits that fail in production.
 
-I can do any of these with you; items 2, 3 and 4 are ones I would start on
-immediately.
+I can do any of these with you; the `seller_id` column and the Media Center
+seam are the ones I would start on immediately.
 
 ---
 
