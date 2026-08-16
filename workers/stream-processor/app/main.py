@@ -17,6 +17,9 @@ logging.getLogger("elastic_transport").setLevel(logging.INFO)
 # Local imports
 from .indexers.es_client import ensure_index_exists
 from .consumers.event_router import process_event
+from .consumers.event_rules import (
+    INDEXED_EVENTS, PRODUCT_CREATED, infer_event_type, is_product_payload,
+)
 
 try:
     from python_common.kafka_client import KafkaAvroConsumer
@@ -60,18 +63,29 @@ def main():
         else:
             payload = raw_payload
 
-        # THE FIX: Dynamically infer the exact event type based on the unique payload signature
-        event_type = msg_data.get("type") or msg_data.get("event_type")
-        
-        if not event_type:
-            if "base_price_cents" in payload:
-                event_type = "PriceUpdated"
-            elif "total_quantity_available" in payload or "quantity_reserved" in payload:
-                event_type = "InventoryReserved"
-            elif "name" in payload and "description" in payload:
-                event_type = "ProductCreated"
-            else:
-                event_type = "ProductCreated" # Fallback
+        # The payload carries no type, so it is inferred from the shape of its
+        # fields. See event_rules: this used to end in a fallback that called
+        # anything unrecognised a ProductCreated, which indexed every failed
+        # inventory reservation as a null-filled product.
+        event_type = infer_event_type(msg_data, payload)
+
+        if event_type is None:
+            logger.warning(
+                "Unrecognised event shape; skipping rather than guessing. "
+                "keys=%s", sorted(payload) if isinstance(payload, dict) else type(payload))
+            return
+
+        if event_type not in INDEXED_EVENTS:
+            # A known event this worker does not maintain a projection for.
+            # Ignored on purpose, which is different from ignored by accident.
+            logger.debug("Ignoring %s; no projection for it here", event_type)
+            return
+
+        if event_type == PRODUCT_CREATED and not is_product_payload(payload):
+            logger.warning(
+                "ProductCreated with neither name nor sku; refusing to index. "
+                "keys=%s", sorted(payload))
+            return
 
         logger.debug(f"Routing to Elasticsearch -> Event: {event_type}, Data: {payload}")
         
@@ -91,15 +105,16 @@ def main():
                 if inspect.isawaitable(res):
                     asyncio.run(res)
         except Exception as route_err:
-            logger.error(f"Event router execution failed: {route_err}. Engaging Direct ES Fallback for doc_id={doc_id}.")
-            import requests
-            from .indexers.es_client import ES_URL, INDEX_NAME
-            # Was a second hardcoded http://elasticsearch:9200. Two addresses for
-            # one dependency means pointing the worker at a different cluster
-            # silently moves only half its writes.
-            es_res = requests.put(
-                f"{ES_URL}/{INDEX_NAME}/_doc/{doc_id}", json=payload, timeout=30)
-            logger.debug(f"Direct Fallback ES Response: {es_res.status_code} - {es_res.text}")
+            # No direct-to-Elasticsearch fallback. It used to PUT the raw event
+            # payload as the whole document, which is the same erasure the read
+            # model helper exists to prevent -- it would replace a real product
+            # with whatever an event happened to contain, and it fired exactly
+            # when something was already wrong. Letting the exception through
+            # sends the message to dlq.<topic>, where a person can look at it.
+            logger.error(
+                f"Event router failed for doc_id={doc_id} ({event_type}): "
+                f"{route_err}. Routing to DLQ.")
+            raise
 
     consumer = KafkaAvroConsumer(
         broker_url="kafka:29092",

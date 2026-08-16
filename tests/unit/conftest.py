@@ -112,3 +112,8 @@ read_model = load_module(
     "read_model_under_test",
     "shared/libs/python-common/read_model.py",
 )
+
+event_rules = load_module(
+    "event_rules_under_test",
+    "workers/stream-processor/app/consumers/event_rules.py",
+)
