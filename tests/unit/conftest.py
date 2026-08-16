@@ -55,3 +55,8 @@ checkout_lock = load_module(
     "checkout_lock_under_test",
     "services/cart-service/app/services/checkout_lock.py",
 )
+
+reservation_rules = load_module(
+    "reservation_rules_under_test",
+    "services/inventory-service/app/services/reservation_rules.py",
+)
