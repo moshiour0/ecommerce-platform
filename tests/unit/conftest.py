@@ -60,3 +60,8 @@ reservation_rules = load_module(
     "reservation_rules_under_test",
     "services/inventory-service/app/services/reservation_rules.py",
 )
+
+cart_cache_rules = load_module(
+    "cart_cache_rules_under_test",
+    "services/cart-service/app/services/cart_cache_rules.py",
+)

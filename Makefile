@@ -55,7 +55,8 @@ verify:
 		pass=0; fail=0; \
 		for t in test_01_catalog_write_to_read_sync test_02_cqrs_distributed_updates \
 		         test_03_saga_orchestrator test_04_full_checkout_flow \
-		         test_05_auxiliary_services test_06_intra_mesh_connectivity; do \
+		         test_05_auxiliary_services test_06_intra_mesh_connectivity \
+		         test_07_cart_cache_coherence; do \
 			if python $$t.py >/dev/null 2>&1; then \
 				echo "  PASS  $$t"; pass=$$((pass+1)); \
 			else \

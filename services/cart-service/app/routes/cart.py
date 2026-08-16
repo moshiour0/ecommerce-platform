@@ -36,6 +36,10 @@ async def checkout_endpoint(
 @router.get("/{user_id}", response_model=CartResponse, status_code=200)
 async def get_cart_endpoint(
     user_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis)
 ):
-    return await get_cart(redis, str(user_id))
+    # The database dependency is new here: a read now falls back to cart_state
+    # when the Redis key is missing, instead of reporting an evicted cart as an
+    # empty one.
+    return await get_cart(db, redis, str(user_id))

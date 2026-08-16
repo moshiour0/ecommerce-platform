@@ -13,9 +13,63 @@ from ..schemas import CartAddRequest, CartResponse, CartItem
 from .checkout_lock import (
     acquire as acquire_lock, lock_key_for, new_token, release as release_lock,
 )
+from .cart_cache_rules import DurableCart, merge_item, resolve_cart
 
 logger = logging.getLogger(__name__)
 CART_TTL = 3600  # 1 hour
+
+
+async def _load_durable(db: AsyncSession, user_id: str):
+    """The user's live cart_state row, or None.
+
+    Filtered to 'active' to match the invariant the rest of this service
+    assumes -- at most one active cart per user. resolve_cart re-checks the
+    status anyway, so a row that slips through in another state still resolves
+    to empty rather than being trusted.
+    """
+    result = await db.execute(
+        select(CartState)
+        .where(CartState.user_id == uuid.UUID(user_id))
+        .where(CartState.status == 'active')
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    return DurableCart(items=row.items or {}, status=row.status,
+                       expires_at=row.expires_at)
+
+
+async def _resolve(db: AsyncSession, redis: Redis, user_id: str):
+    """Read both stores and decide what the cart is. See cart_cache_rules."""
+    raw = await redis.get(f"cart:{user_id}")
+    # `is not None` rather than a truth test: a stored "{}" is a real, empty
+    # cart and must not be mistaken for the missing key that means a miss.
+    cached = json.loads(raw) if raw is not None else None
+    durable = await _load_durable(db, user_id)
+    view = resolve_cart(cached, durable, datetime.now(timezone.utc))
+    return view, durable
+
+
+async def _rewarm(redis: Redis, user_id: str, items: dict, durable) -> None:
+    """Put a rehydrated cart back in Redis so the next read is fast again.
+
+    The TTL is the cart's remaining life, not a fresh hour: refreshing it here
+    would let a cart outlive the expires_at the sweeper works from, so reading
+    a cart would keep it alive indefinitely.
+
+    Failing to re-warm is not worth failing the read over -- the caller already
+    has the right answer from Postgres.
+    """
+    ttl = CART_TTL
+    if durable is not None and durable.expires_at is not None:
+        remaining = int((durable.expires_at - datetime.now(timezone.utc)).total_seconds())
+        if remaining <= 0:
+            return
+        ttl = min(CART_TTL, remaining)
+    try:
+        await redis.set(f"cart:{user_id}", json.dumps(items), ex=ttl)
+    except Exception as e:
+        logger.warning("cart cache re-warm failed for %s: %s", user_id, e)
 
 async def check_idempotency(db: AsyncSession, idempotency_key: str):
     """Rule 4: On conflict, we let the caller handle the cached response."""
@@ -29,23 +83,18 @@ async def add_to_cart(db: AsyncSession, redis: Redis, user_id: str, request: Car
     # 1. Postgres Idempotency Check — return current cart on retry
     is_duplicate = await check_idempotency(db, idempotency_key)
     if is_duplicate:
-        return await get_cart(redis, user_id)
-    
-    # 2. Redis Cart Operations
-    cart_key = f"cart:{user_id}"
-    
-    # Read existing cart
-    existing_cart_data = await redis.get(cart_key)
-    cart_items = {}
-    if existing_cart_data:
-        cart_items = json.loads(existing_cart_data)
+        return await get_cart(db, redis, user_id)
 
-    # Update item quantity
-    prod_id = str(request.item.product_id)
-    if prod_id in cart_items:
-        cart_items[prod_id] += request.item.quantity
-    else:
-        cart_items[prod_id] = request.item.quantity
+    # 2. Resolve the cart from BOTH stores before merging.
+    #
+    # Reading only Redis here is what made an eviction destructive: the merge
+    # was applied to an empty view and the result then overwrote cart_state,
+    # so a lost cache key deleted the durable cart on the very next add.
+    cart_key = f"cart:{user_id}"
+    view, _durable = await _resolve(db, redis, user_id)
+
+    cart_items = merge_item(view.items, str(request.item.product_id),
+                            request.item.quantity)
 
     # Attempt Redis update
     try:
@@ -96,11 +145,15 @@ async def checkout_cart(db: AsyncSession, redis: Redis, user_id: str, idempotenc
         raise HTTPException(status_code=409, detail="Checkout already in progress for this user")
 
     try:
-        # Check if cart exists in Redis
-        existing_cart_data = await redis.get(cart_key)
-        if not existing_cart_data:
+        # Resolve from both stores rather than Redis alone. An evicted key used
+        # to 404 a checkout whose cart was alive and well in Postgres. A cart
+        # that is genuinely gone -- expired, or already claimed by another
+        # checkout that set status to checkout_in_progress -- still resolves to
+        # empty here, so the mutex's losing requests keep getting 404/409.
+        view, _durable = await _resolve(db, redis, user_id)
+        if view.empty:
             raise HTTPException(status_code=404, detail="Cart not found or empty")
-        
+
         # Postgres Idempotency Check — return cached on retry
         is_duplicate = await check_idempotency(db, idempotency_key)
         if is_duplicate:
@@ -127,7 +180,7 @@ async def checkout_cart(db: AsyncSession, redis: Redis, user_id: str, idempotenc
             type="CartCheckoutInitiated",
             payload={
                 "user_id": user_id,
-                "items": json.loads(existing_cart_data),
+                "items": view.items,
                 "initiated_at": datetime.now(timezone.utc).isoformat()
             }
         )
@@ -150,14 +203,19 @@ async def checkout_cart(db: AsyncSession, redis: Redis, user_id: str, idempotenc
         # and its tests.
         await release_lock(redis, lock_key, lock_token)
 
-async def get_cart(redis: Redis, user_id: str) -> CartResponse:
-    cart_key = f"cart:{user_id}"
-    existing_cart_data = await redis.get(cart_key)
-    
-    if not existing_cart_data:
-        return CartResponse(user_id=uuid.UUID(user_id), items=[])
+async def get_cart(db: AsyncSession, redis: Redis, user_id: str) -> CartResponse:
+    # Reads used to hit Redis and stop there, so an evicted key was reported as
+    # an empty cart while cart_state still held the items. The durable row is
+    # now the fallback, and a recovered cart is written back so only the first
+    # read after an eviction pays for Postgres.
+    view, durable = await _resolve(db, redis, user_id)
 
-    cart_items = json.loads(existing_cart_data)
-    response_items = [CartItem(product_id=uuid.UUID(k), quantity=v) for k, v in cart_items.items()]
-    
+    if view.rehydrated:
+        logger.info("cart cache miss for %s, rehydrated %d item(s) from postgres",
+                    user_id, len(view.items))
+        await _rewarm(redis, user_id, view.items, durable)
+
+    response_items = [CartItem(product_id=uuid.UUID(k), quantity=v)
+                      for k, v in view.items.items()]
+
     return CartResponse(user_id=uuid.UUID(user_id), items=response_items)

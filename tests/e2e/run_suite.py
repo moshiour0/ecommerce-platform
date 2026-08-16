@@ -29,6 +29,7 @@ TESTS = [
     "test_04_full_checkout_flow",
     "test_05_auxiliary_services",
     "test_06_intra_mesh_connectivity",
+    "test_07_cart_cache_coherence",
 ]
 
 
