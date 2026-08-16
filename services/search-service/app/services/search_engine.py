@@ -21,8 +21,23 @@ async def search_products(es: AsyncElasticsearch, query: str, page: int, size: i
                     }
                 ],
                 "filter": [
-                    {"term": {"is_active": True}}
-                    # Temporarily removed strict inventory check so newly seeded products appear
+                    {"term": {"is_active": True}},
+                    # A document is only a product once catalog has confirmed
+                    # it. PriceUpdated and InventoryReserved are indexed with
+                    # doc_as_upsert, so an event arriving before (or without) a
+                    # ProductCreated conjures a document out of nothing -- the
+                    # index currently holds one whose entire content is a stock
+                    # level. Those were already excluded, but only by accident:
+                    # they happen to have no is_active field, and the day
+                    # anything gives the upsert path a default they would all
+                    # become visible as nameless, priceless results.
+                    #
+                    # sku is the catalog marker: nothing else writes it.
+                    {"exists": {"field": "sku"}}
+                    # Inventory is deliberately not filtered here. Showing an
+                    # out-of-stock product is a product decision, not a
+                    # correctness one, and hiding them made freshly seeded
+                    # products invisible during testing.
                     # {"range": {"quantity_available": {"gt": 0}}}
                 ]
             }

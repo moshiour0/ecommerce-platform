@@ -68,9 +68,6 @@ async def main():
 
         # 3. Poll Search Service for Denormalized Elasticsearch updates
         print("3. Polling Search Service to verify CQRS denormalization...")
-        print("   -> [Auto-Healing] Invoking direct sync since local Kafka might be absent...")
-        from es_healer import heal_elasticsearch
-        await heal_elasticsearch()
 
         for attempt in range(1, 11):
             await asyncio.sleep(2)

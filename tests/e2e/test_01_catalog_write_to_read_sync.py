@@ -80,9 +80,6 @@ async def run_test():
             return
 
         print("\n2. Waiting for Debezium -> Kafka -> Stream Processor -> Elasticsearch...")
-        print("   -> [Auto-Healing] Invoking direct sync since local Kafka might be absent...")
-        from es_healer import heal_elasticsearch
-        await heal_elasticsearch()
         
         max_retries = 10
         for attempt in range(max_retries):
