@@ -145,9 +145,22 @@ def phase_models():
     return live_dbs
 
 
-def phase_migrations():
+def phase_migrations(live_dbs):
+    """Apply migrations, but only to databases whose service actually ran.
+
+    A migration that ALTERs a table created by a service's models cannot work
+    when that service is absent -- 008 adds delivery columns to
+    notification_records, which only exists once notification-service has run
+    create_all. Against the CI slice that failed the whole bootstrap for a
+    database nobody had brought up.
+
+    Phase 1 already skips absent services and phase 3 skips their checks; this
+    closes the middle, so a partial bring-up is coherent end to end. With the
+    full stack every database is live and every migration runs, exactly as
+    before.
+    """
     print("PHASE 2 — SQL migrations")
-    targets = sorted({db for _, dbs in MIGRATIONS for db in dbs})
+    targets = sorted({db for _, dbs in MIGRATIONS for db in dbs if db in live_dbs})
     for db in targets:
         res = psql(db, sql=LEDGER_DDL)
         if res.returncode != 0:
@@ -161,6 +174,9 @@ def phase_migrations():
             failures.append(f"missing {filename}")
             continue
         for db in dbs:
+            if db not in live_dbs:
+                print(f"  SKIP  {filename:<42} -> {db} (service not running)")
+                continue
             res = psql(db, file=path)
             if res.returncode != 0:
                 err = (res.stderr or res.stdout).strip().splitlines()[-1:] or ["unknown"]
@@ -225,7 +241,7 @@ if __name__ == "__main__":
     print("=" * 62 + "\n")
     wait_for_postgres()
     live_dbs = phase_models()
-    phase_migrations()
+    phase_migrations(live_dbs)
     verify(live_dbs)
 
     if failures:
