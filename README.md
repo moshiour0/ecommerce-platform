@@ -30,6 +30,8 @@ under concurrency or failure:
 - gateway rate limiting, and cart cache coherence
 - media quarantine, audit chain integrity, webhook deduplication, notification
   retry policy, DLQ recovery, and reindex field ownership
+- CDC connector configuration: slot uniqueness, the event-type header, and
+  capturing nothing but the outbox
 
 Two external boundaries are stubs, and deliberately so: there is no email, SMS
 or push provider and no payment processor in this stack. `notification-worker`
@@ -65,7 +67,7 @@ Three tiers, deliberately separated by what they need to run.
 
 | Tier | What it proves | Needs | Count |
 |---|---|---|---|
-| `tests/unit` | Decisions, against fake inputs and fake clocks | nothing | 396 |
+| `tests/unit` | Decisions, against fake inputs and fake clocks | nothing | 441 |
 | `services/api-gateway/test` | Rate limit tiering and exemptions | nothing | 24 |
 | `shared/libs/node-common/test` | Read-model field ownership, Node side | nothing | 18 |
 | `tests/integration` | Behaviour under real parallel load | running stack | 4 |
@@ -143,6 +145,55 @@ The saga never rests in a failure state: `FAILED` and `TIMED_OUT` both converge
 on `ROLLBACK_COMPLETED`, and every forward step declares its inverse. A
 compensation for a step that never took effect must succeed as a no-op, because
 after a timeout it is unknowable whether the charge went through.
+
+## How events reach the consumers
+
+Every service writes business state and an `outbox_messages` row in one
+transaction. Debezium tails each database's write-ahead log, and the outbox
+event router turns those rows into Kafka messages routed by `aggregate_type`,
+so a row tagged `Product` lands on `Product.events`.
+
+One connector per service database, each with **its own replication slot**.
+Postgres allows one connector per slot name, so connectors that share one fight
+over it and some databases silently stop producing events. Every slot is named
+after its service, and a test asserts no two are alike.
+
+The event's type travels as a **Kafka header**, `eventType`, taken from the
+outbox row's `type` column:
+
+```
+id:4cc1484d-…,timestamp:2026-08-16T21:09:11Z,eventType:InventoryReserved
+```
+
+It is a header rather than a field in the message because the value is Avro and
+the Schema Registry runs `FULL_TRANSITIVE` (Rule 5). Adding a field to the value
+is rejected outright — `Schema being registered is incompatible with an earlier
+schema` — and the connector task fails. A header costs no schema version.
+
+That header exists because the alternative was guessing. Before it, consumers
+inferred an event's type from the shape of its fields, and the inference ended
+in a fallback that assumed anything unrecognised was a product. A failed
+inventory reservation matched nothing, so every one of them was indexed as a
+product with a null name, a null SKU, and the inventory row's id. Nothing
+failed; search hid them because it requires the catalog marker. Consumers now
+refuse to guess: an unidentifiable event is skipped and logged, never assumed.
+
+Shape checks remain as a fallback, because every event already on a topic was
+published before the header existed and still has to be identified when a
+consumer replays from the beginning.
+
+Connectors are provisioned by one script and only one:
+
+```bash
+python fix_connectors.py
+```
+
+It is idempotent, and the configuration it builds is unit tested — slot
+uniqueness, the type header, and that only `public.outbox_messages` is
+captured. Capturing business tables would put private data on Kafka and defeat
+the point of the outbox. A second set of hand-written connector definitions used
+to live alongside it, covering eight of the fifteen databases and setting no
+slot name at all; it is gone.
 
 ## Who owns what in the read model
 
