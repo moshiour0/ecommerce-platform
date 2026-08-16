@@ -181,6 +181,13 @@ index with `doc_as_upsert`, so an event arriving before its `ProductCreated`
 creates a partial document rather than being dropped — correct for out-of-order
 delivery — and search excludes it until catalog catches up.
 
+Documents that stay parentless are deleted by `reindex-worker`, but only on
+request (`REAP_ORPHANS`) and only after a grace period, since a partial document
+and an early one look identical until enough time has passed. Three checks run
+before any delete: the index says there is no catalog data, the document is
+older than the grace period, and catalog is asked directly whether the row
+exists. Only the last is authoritative.
+
 The two ownership tables are separate files, because the libraries land in
 different images and share no path at runtime. A parity test parses the
 JavaScript and fails if the two ever disagree.

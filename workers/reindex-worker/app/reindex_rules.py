@@ -80,6 +80,16 @@ FOREIGN_FIELDS = ("price_cents", "quantity_available")
 
 DEFAULT_BATCH_SIZE = 500
 
+# Presence of any of these means catalog has confirmed the document, so it is a
+# real product and never a reap candidate. sku is the strongest marker -- only
+# catalog writes it -- and catalog_updated_at covers a document this worker has
+# already repaired.
+CATALOG_MARKER_FIELDS = ("sku", "catalog_updated_at")
+
+# How long a document with no catalog data is left alone before it is treated as
+# genuinely parentless rather than merely early.
+DEFAULT_REAP_GRACE_SECONDS = 3600
+
 
 @dataclass(frozen=True)
 class Cursor:
@@ -144,6 +154,63 @@ def should_index(source_updated_at: Any, indexed_updated_at: Any) -> bool:
         return True
 
     return source >= indexed
+
+
+@dataclass(frozen=True)
+class ReapDecision:
+    reap: bool
+    reason: str
+
+
+def is_reapable(doc: Dict[str, Any], now: datetime,
+                grace_seconds: int = DEFAULT_REAP_GRACE_SECONDS,
+                allow_undated: bool = False) -> ReapDecision:
+    """Whether an indexed document is a parentless leftover.
+
+    Price and inventory events index with doc_as_upsert, so an event for a
+    product catalog has not created conjures a document out of nothing. Some of
+    those are permanent junk -- a reservation against a product id that never
+    existed -- and some are simply early, because nothing orders a PriceUpdated
+    against the ProductCreated it belongs to.
+
+    Telling them apart is only possible with time, hence the grace period. A
+    document younger than it is left alone even with no catalog data, because
+    deleting one whose ProductCreated is thirty seconds behind would destroy a
+    price that had arrived correctly.
+
+    This decides from the document alone. The caller checks the database too
+    before deleting anything, because a document is cheap to keep and
+    impossible to recover.
+    """
+    present = [f for f in CATALOG_MARKER_FIELDS if doc.get(f) not in (None, "")]
+    if present:
+        return ReapDecision(False, f"catalog has confirmed it ({', '.join(present)})")
+
+    seen_at = parse_timestamp(doc.get("updated_at"))
+    if seen_at is None:
+        # No usable timestamp means the age is unknown, and an unknown age is
+        # not an old one, so the default is to keep.
+        #
+        # allow_undated exists because documents like this really are
+        # produced: a ProductCreated whose payload carried nothing but an id
+        # indexes as product_id, a default is_active, and nulls everywhere
+        # else. They can never age out, so without an opt-in they are
+        # immortal. It is off by default because the only thing separating
+        # such a document from a price that arrived one second early is the
+        # caller's check against catalog -- which is authoritative, but is
+        # the single remaining guard rather than the second of two.
+        if allow_undated:
+            return ReapDecision(
+                True, "no catalog data and no timestamp; undated reaping enabled")
+        return ReapDecision(False, "no usable timestamp, so age is unknown")
+
+    age = (now - seen_at).total_seconds()
+    if age < grace_seconds:
+        return ReapDecision(
+            False, f"only {int(age)}s old; grace is {grace_seconds}s")
+
+    return ReapDecision(
+        True, f"no catalog data and {int(age)}s old")
 
 
 def build_document(row: Dict[str, Any]) -> Dict[str, Any]:

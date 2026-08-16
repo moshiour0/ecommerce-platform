@@ -424,6 +424,13 @@ services:
       # 0 means one pass at startup, then idle. A periodic full reindex is a
       # blunt instrument; re-running is a restart or a Job.
       - REINDEX_INTERVAL_SECONDS=${REINDEX_INTERVAL_SECONDS:-0}
+      # Deleting read-model documents is the one irreversible thing this
+      # worker does, so it is opt-in. REAP_UNDATED additionally allows
+      # documents with no timestamp, which can never age out of the grace
+      # period and would otherwise survive forever.
+      - REAP_ORPHANS=${REAP_ORPHANS:-false}
+      - REAP_GRACE_SECONDS=${REAP_GRACE_SECONDS:-3600}
+      - REAP_UNDATED=${REAP_UNDATED:-false}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
       - OTEL_SERVICE_NAME=reindex-worker
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8033" ]

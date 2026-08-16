@@ -20,6 +20,7 @@ already holds a newer copy of. Both are explained in reindex_rules.
 import asyncio
 import logging
 import os
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
 import asyncpg
@@ -30,8 +31,9 @@ from pythonjsonlogger import jsonlogger
 from python_common.read_model import CATALOG, write_product
 
 from .reindex_rules import (
-    CATALOG_TIMESTAMP_FIELD, DEFAULT_BATCH_SIZE, Cursor, build_document,
-    is_complete, next_cursor, should_index,
+    CATALOG_TIMESTAMP_FIELD, DEFAULT_BATCH_SIZE, DEFAULT_REAP_GRACE_SECONDS,
+    Cursor, build_document, is_complete, is_reapable, next_cursor,
+    should_index,
 )
 
 handler = logging.StreamHandler()
@@ -51,11 +53,26 @@ BATCH_SIZE = int(os.getenv("BATCH_SIZE", DEFAULT_BATCH_SIZE))
 # instrument and is off unless someone asks for it.
 INTERVAL = int(os.getenv("REINDEX_INTERVAL_SECONDS", "0"))
 
+# Deleting read-model documents is the one irreversible thing this worker
+# can do, so it is off unless asked for. The read model is rebuildable in
+# principle, but only for products that still exist in catalog -- which is
+# exactly what these documents do not.
+REAP_ORPHANS = os.getenv("REAP_ORPHANS", "false").strip().lower() in (
+    "1", "true", "yes", "on")
+REAP_GRACE_SECONDS = int(os.getenv("REAP_GRACE_SECONDS",
+                                   DEFAULT_REAP_GRACE_SECONDS))
+# Documents with no timestamp cannot age out of the grace period, so they
+# survive every ordinary reap. Separate flag because it removes one of the
+# two guards, leaving only the catalog check.
+REAP_UNDATED = os.getenv("REAP_UNDATED", "false").strip().lower() in (
+    "1", "true", "yes", "on")
+
 es = Elasticsearch([ES_URL], request_timeout=30, retry_on_timeout=True,
                    max_retries=5)
 
 _stats = {"passes": 0, "scanned": 0, "indexed": 0, "skipped_newer": 0,
-          "errors": 0, "running": False}
+          "errors": 0, "running": False,
+          "reap_examined": 0, "reap_kept": 0, "reaped": 0}
 
 # Keyset pagination over (created_at, id). OFFSET would skip rows as the table
 # grows underneath a long scan, and a backfill that silently misses rows is
@@ -152,8 +169,92 @@ async def run_pass(pool) -> None:
         _stats["running"] = False
 
 
+ORPHAN_QUERY = {
+    "query": {"bool": {"must_not": [{"exists": {"field": "sku"}}]}},
+    "_source": ["updated_at", "sku", "catalog_updated_at"],
+    "size": 1000,
+}
+
+
+async def reap_pass(pool) -> None:
+    """Delete documents that belong to no product.
+
+    Three independent checks before anything is removed, because a document is
+    cheap to keep and impossible to recover:
+
+      1. Elasticsearch is asked only for documents with no sku -- the catalog
+         marker nothing else writes.
+      2. is_reapable re-checks the markers and requires the document to be
+         older than the grace period, so a partial document whose
+         ProductCreated is merely late is left alone.
+      3. catalog_db is asked directly whether a row exists for that id. The
+         index having no catalog data and the database having no row are
+         different claims, and only the second is authoritative.
+    """
+    if not REAP_ORPHANS:
+        return
+
+    logger.info("reap pass starting (grace %ss)", REAP_GRACE_SECONDS)
+    try:
+        res = es.search(index=INDEX_NAME, body=ORPHAN_QUERY)
+    except Exception:
+        _stats["errors"] += 1
+        logger.exception("could not search for orphan documents")
+        return
+
+    hits = res.get("hits", {}).get("hits", [])
+    now = datetime.now(timezone.utc)
+    examined = kept = reaped = 0
+
+    for hit in hits:
+        examined += 1
+        doc_id = hit["_id"]
+        decision = is_reapable(hit.get("_source") or {}, now,
+                               REAP_GRACE_SECONDS, REAP_UNDATED)
+        if not decision.reap:
+            kept += 1
+            logger.debug("keeping %s: %s", doc_id, decision.reason)
+            continue
+
+        # The authoritative check. A document can lack catalog fields for
+        # reasons other than the product not existing -- a stripped field, a
+        # partial write -- and deleting a real product's document because of
+        # one of those would be the worst outcome available here.
+        try:
+            async with pool.acquire() as conn:
+                exists = await conn.fetchval(
+                    "SELECT 1 FROM products WHERE id = $1::uuid", doc_id)
+        except Exception:
+            _stats["errors"] += 1
+            logger.exception("could not confirm %s against catalog; keeping", doc_id)
+            kept += 1
+            continue
+
+        if exists:
+            kept += 1
+            logger.warning(
+                "%s has a catalog row but no sku in the index; repairing rather "
+                "than reaping", doc_id)
+            continue
+
+        try:
+            es.delete(index=INDEX_NAME, id=doc_id, ignore=[404])
+            reaped += 1
+            logger.info("reaped %s: %s", doc_id, decision.reason)
+        except Exception:
+            _stats["errors"] += 1
+            logger.exception("failed to delete %s", doc_id)
+
+    _stats["reap_examined"] += examined
+    _stats["reap_kept"] += kept
+    _stats["reaped"] += reaped
+    logger.info("reap pass complete: examined=%s kept=%s reaped=%s",
+                examined, kept, reaped)
+
+
 async def reindex_loop(pool):
     await run_pass(pool)
+    await reap_pass(pool)
     if INTERVAL <= 0:
         logger.info("REINDEX_INTERVAL_SECONDS is 0; idling until restarted")
         return
@@ -161,6 +262,7 @@ async def reindex_loop(pool):
         await asyncio.sleep(INTERVAL)
         try:
             await run_pass(pool)
+            await reap_pass(pool)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -194,4 +296,6 @@ async def health_check():
 @app.get("/metrics")
 async def metrics():
     return {"index": INDEX_NAME, "batch_size": BATCH_SIZE,
-            "interval_seconds": INTERVAL, **_stats}
+            "interval_seconds": INTERVAL, "reap_orphans": REAP_ORPHANS,
+            "reap_grace_seconds": REAP_GRACE_SECONDS,
+            "reap_undated": REAP_UNDATED, **_stats}

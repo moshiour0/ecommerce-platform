@@ -215,3 +215,95 @@ def test_the_foreign_field_list_matches_the_shared_table():
 def test_the_catalog_timestamp_is_catalog_owned_in_the_shared_table():
     assert read_model.PRODUCT_FIELD_OWNERS[
         reindex_rules.CATALOG_TIMESTAMP_FIELD] == read_model.CATALOG
+
+
+# ---------------------------------------------------------------------------
+# reaping parentless documents
+# ---------------------------------------------------------------------------
+
+is_reapable = reindex_rules.is_reapable
+GRACE = reindex_rules.DEFAULT_REAP_GRACE_SECONDS
+OLD = NOW - timedelta(seconds=GRACE + 60)
+
+
+def orphan_doc(**overrides):
+    """A document conjured by a price or inventory upsert: no catalog data."""
+    doc = {"quantity_available": 3, "updated_at": OLD.isoformat()}
+    doc.update(overrides)
+    return doc
+
+
+def test_an_old_parentless_document_is_reapable():
+    assert is_reapable(orphan_doc(), NOW).reap is True
+
+
+def test_a_document_with_a_sku_is_never_reaped():
+    # sku is the catalog marker; its presence means this is a real product.
+    d = is_reapable(orphan_doc(sku="SKU-1"), NOW)
+    assert d.reap is False
+    assert "catalog" in d.reason
+
+
+def test_a_document_the_backfill_has_touched_is_never_reaped():
+    d = is_reapable(orphan_doc(catalog_updated_at=OLD.isoformat()), NOW)
+    assert d.reap is False
+
+
+def test_a_young_parentless_document_is_kept():
+    # The out-of-order case: a PriceUpdated whose ProductCreated is seconds
+    # behind. Deleting this destroys a price that arrived correctly.
+    recent = (NOW - timedelta(seconds=30)).isoformat()
+    d = is_reapable(orphan_doc(updated_at=recent), NOW)
+    assert d.reap is False
+    assert "grace" in d.reason
+
+
+def test_the_grace_boundary_keeps_rather_than_reaps():
+    at_edge = (NOW - timedelta(seconds=GRACE - 1)).isoformat()
+    assert is_reapable(orphan_doc(updated_at=at_edge), NOW).reap is False
+    past_edge = (NOW - timedelta(seconds=GRACE + 1)).isoformat()
+    assert is_reapable(orphan_doc(updated_at=past_edge), NOW).reap is True
+
+
+def test_the_grace_period_is_configurable():
+    recent = (NOW - timedelta(seconds=30)).isoformat()
+    assert is_reapable(orphan_doc(updated_at=recent), NOW, grace_seconds=10).reap
+
+
+def test_a_document_with_no_timestamp_is_kept_by_default():
+    # An unknown age is not an old age. Without a timestamp there is no way to
+    # tell a permanent leftover from one that arrived a moment ago.
+    d = is_reapable({"quantity_available": 3}, NOW)
+    assert d.reap is False
+    assert "age is unknown" in d.reason
+
+
+def test_an_undated_document_can_be_reaped_on_request():
+    # These exist: a ProductCreated carrying nothing but an id indexes as a
+    # product_id, a default is_active and nulls everywhere else. They can never
+    # age out, so without an opt-in they are immortal.
+    d = is_reapable({"product_id": "p-1", "is_active": True, "updated_at": None},
+                    NOW, allow_undated=True)
+    assert d.reap is True
+
+
+def test_the_undated_opt_in_still_respects_catalog_markers():
+    # The flag relaxes the age check, not the ownership one. A real product
+    # must survive it.
+    d = is_reapable({"sku": "SKU-1", "updated_at": None}, NOW, allow_undated=True)
+    assert d.reap is False
+
+
+def test_an_unparseable_timestamp_is_kept():
+    assert is_reapable(orphan_doc(updated_at="not-a-date"), NOW).reap is False
+
+
+def test_an_empty_sku_does_not_count_as_catalog_data():
+    # A stripped field is absence, not confirmation -- the e2e healer used to
+    # produce exactly this shape.
+    assert is_reapable(orphan_doc(sku=""), NOW).reap is True
+
+
+def test_a_completely_empty_document_is_kept():
+    # No markers and no timestamp: nothing here justifies a delete.
+    assert is_reapable({}, NOW).reap is False
