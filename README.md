@@ -65,14 +65,25 @@ Three tiers, deliberately separated by what they need to run.
 
 | Tier | What it proves | Needs | Count |
 |---|---|---|---|
-| `tests/unit` | Decisions, against fake inputs and fake clocks | nothing | 322 |
+| `tests/unit` | Decisions, against fake inputs and fake clocks | nothing | 396 |
 | `services/api-gateway/test` | Rate limit tiering and exemptions | nothing | 24 |
+| `shared/libs/node-common/test` | Read-model field ownership, Node side | nothing | 18 |
 | `tests/integration` | Behaviour under real parallel load | running stack | 4 |
 | `tests/e2e` | The platform end to end | running stack | 7 |
 
 ```bash
 python -m pytest tests/unit -q
+```
+
+```bash
 cd services/api-gateway && npm test
+```
+
+```bash
+cd shared/libs/node-common && npm test
+```
+
+```bash
 python tests/e2e/run_suite.py
 ```
 
@@ -89,7 +100,8 @@ flash sale into a 500 storm, and the cache eviction that deleted carts.
 
 Two workflows, in [.github/workflows](.github/workflows):
 
-- **CI** — both unit tiers, on every push and pull request. ~15 seconds.
+- **CI** — all three dependency-free tiers (Python units, the gateway's, and the
+  shared Node library's), on every push and pull request. ~15 seconds.
 - **Stack tests** — boots a six-container slice (postgres, redis, cart-service,
   inventory-service, api-gateway, audit-service) and runs the cart cache e2e
   test plus all four concurrency checks. ~1m30s.
@@ -132,6 +144,47 @@ on `ROLLBACK_COMPLETED`, and every forward step declares its inverse. A
 compensation for a step that never took effect must succeed as a no-op, because
 after a timeout it is unknowable whether the charge went through.
 
+## Who owns what in the read model
+
+The `products` document in Elasticsearch is assembled from three services, and
+each field has exactly one writer:
+
+| Field | Owner |
+|---|---|
+| `product_id`, `sku`, `name`, `description`, `is_active`, `base_price_cents` | catalog-service |
+| `price_cents` | pricing-service |
+| `quantity_available` | inventory-service |
+| `updated_at` | nobody — every writer touches it |
+
+Two prices, on purpose. `base_price_cents` is catalog's list price;
+`price_cents` is the effective price pricing publishes. They were the same field
+with two claimants for most of this project's life, which meant whoever wrote
+last won and a product with no pricing row was served at `0` — displayed as free.
+Search resolves them at read time, pricing first, and reports which it used.
+An unpriced product returns `null`, never `0`, because the difference between
+"free" and "we do not know yet" is the difference between a bug report and an
+order.
+
+Writes go through `read_model.write_product` in `python-common`, or
+`writeProduct` in `node-common`. They are always a partial upsert and they
+refuse fields the calling service does not own. That is not style. The same
+whole-document write was made three separate times here — an e2e helper that
+`PUT` documents and stripped every SKU on every run, a backfill worker that came
+one line from erasing every price, and the CDC consumer that actually did erase
+price and stock whenever Kafka redelivered a `ProductCreated`. Each was written
+by someone who knew the document had several owners; knowing was not enough,
+because the dangerous call is shorter to type. There is deliberately no function
+that replaces a document, and a test asserts none appears.
+
+A document without catalog's fields is not a product. Price and inventory events
+index with `doc_as_upsert`, so an event arriving before its `ProductCreated`
+creates a partial document rather than being dropped — correct for out-of-order
+delivery — and search excludes it until catalog catches up.
+
+The two ownership tables are separate files, because the libraries land in
+different images and share no path at runtime. A parity test parses the
+JavaScript and fails if the two ever disagree.
+
 ## Layout
 
 ```
@@ -160,6 +213,9 @@ The ones that come up constantly:
 5. **Integer cents.** No binary floating point for money, anywhere.
 6. **No secret fallbacks.** A service without its `JWT_SECRET` crashes on
    startup rather than running on a default.
+7. **One writer per read-model field.** Shared documents are only ever written
+   in parts, through the helper that enforces it. A whole-document write erases
+   whatever the other owners put there.
 
 ## Documentation
 
