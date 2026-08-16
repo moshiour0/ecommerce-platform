@@ -1,0 +1,7 @@
+# Shell scripts here are executed inside Linux containers, never on the host:
+# the integration checks run in curlimages/curl, and init-dbs.sh is mounted into
+# postgres. core.autocrlf is true on a Windows checkout, so without this rule a
+# fresh clone rewrites them with CRLF and sh dies on the carriage return with an
+# error that names the wrong thing entirely ("not found", pointing at a line
+# that is plainly there). Keep them LF in the working tree on every platform.
+*.sh text eol=lf

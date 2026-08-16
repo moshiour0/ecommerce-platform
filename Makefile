@@ -1,4 +1,4 @@
-.PHONY: up down init bootstrap connectors verify logs clean env
+.PHONY: up down init bootstrap connectors verify logs clean env test-gateway rate-limit-check
 
 COMPOSE = docker compose -f docker-compose.yml -f docker-compose.apps.yml
 
@@ -65,6 +65,19 @@ verify:
 		echo "  ---------------------------------"; \
 		echo "  passed: $$pass  failed: $$fail"; \
 		[ $$fail -eq 0 ]'
+
+# Unit tests for the gateway's rate-limit decisions. node:test ships with
+# Node 18+, so there is no dev dependency to install and no stack to bring up.
+test-gateway:
+	cd services/api-gateway && node --test "test/**/*.test.js"
+
+# Burst check against a running gateway. The script is piped in over stdin
+# rather than bind-mounted: no service image ships curl, and MSYS rewrites the
+# container half of a -v mount on Windows. tests/integration/README.md has the
+# per-shell invocations for machines without make.
+rate-limit-check:
+	@docker run --rm -i --network ecommerce-platform_mesh curlimages/curl:8.5.0 \
+	  sh -s < tests/integration/rate_limit_burst.sh
 
 # ---------------------------------------------------------------------------
 # day to day
