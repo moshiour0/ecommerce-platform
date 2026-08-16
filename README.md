@@ -2,7 +2,7 @@
 
 An event-driven commerce backend built to explore the problems that only appear
 under concurrency: overselling, double checkout, duplicate charges, lost carts,
-and sagas that strand an order halfway through. Twenty services and six workers
+and sagas that strand an order halfway through. Twenty services and seven workers
 communicate through a transactional outbox and Kafka, orchestrated by an
 explicit saga state machine with compensation for every step that moves money
 or stock.
@@ -12,26 +12,38 @@ either one.
 
 ## Status
 
-This repository documents what is built, not what is planned. Roughly:
+This repository documents what is built, not what is planned.
 
-| | Built | Scaffolded |
+| | Count | |
 |---|---|---|
-| Services | 18 | `audit-service`, `media-service` |
-| Workers | `saga-dispatcher`, `stream-processor`, `cdc-outbox` | `notification-worker`, `reindex-worker`, `webhook-handler` |
-| Kubernetes manifests | 28, generated from compose | — |
+| Services | 20 | all carry substantive logic |
+| Workers | 7 | `saga-dispatcher`, `stream-processor`, `cdc-outbox`, `notification-worker`, `reindex-worker`, `webhook-handler`, `dlq-reprocessor` |
+| Kubernetes manifests | 32 | generated from compose, never hand-edited |
 
-The parts under test are the ones that were hard to get right: inventory
-reservation, the cart checkout mutex, saga transitions, payment charge and
-refund decisions, rate limiting, and cart cache coherence. Everything else is
-best read as working-but-unproven.
+"Built" means the code is there and does its job; it does not mean every path
+is proven. The parts genuinely under test are the ones that were hard to get
+right, and they are hard for the same reason each time — they only misbehave
+under concurrency or failure:
+
+- inventory reservation and the cart checkout mutex
+- saga transitions, and payment charge and refund decisions
+- gateway rate limiting, and cart cache coherence
+- media quarantine, audit chain integrity, webhook deduplication, notification
+  retry policy, DLQ recovery, and reindex field ownership
+
+Two external boundaries are stubs, and deliberately so: there is no email, SMS
+or push provider and no payment processor in this stack. `notification-worker`
+and `webhook-handler` implement the logic and the tests around those edges, with
+an interface where the third party would be. Everything outside the list above
+is best read as working-but-unproven.
 
 ## Running it
 
-Requires Docker with about 8 GB available. The stack is 30 containers, five of
+Requires Docker with about 8 GB available. The stack is 34 containers, five of
 them JVMs, so it does not comfortably share a machine with anything large.
 
 ```bash
-cp .env.example .env      # then set JWT_SECRET to a generated value
+cp .env.example .env      # then set JWT_SECRET and PSP_WEBHOOK_SECRET
 docker compose -f docker-compose.yml -f docker-compose.apps.yml up -d
 python scripts/bootstrap_schema.py
 python fix_connectors.py
@@ -53,9 +65,9 @@ Three tiers, deliberately separated by what they need to run.
 
 | Tier | What it proves | Needs | Count |
 |---|---|---|---|
-| `tests/unit` | Decisions, against fake inputs and fake clocks | nothing | 191 |
+| `tests/unit` | Decisions, against fake inputs and fake clocks | nothing | 322 |
 | `services/api-gateway/test` | Rate limit tiering and exemptions | nothing | 24 |
-| `tests/integration` | Behaviour under real parallel load | running stack | 3 |
+| `tests/integration` | Behaviour under real parallel load | running stack | 4 |
 | `tests/e2e` | The platform end to end | running stack | 7 |
 
 ```bash
@@ -78,9 +90,9 @@ flash sale into a 500 storm, and the cache eviction that deleted carts.
 Two workflows, in [.github/workflows](.github/workflows):
 
 - **CI** — both unit tiers, on every push and pull request. ~15 seconds.
-- **Stack tests** — boots a five-container slice (postgres, redis, cart-service,
-  inventory-service, api-gateway) and runs the cart cache e2e test plus all
-  three concurrency checks. ~1m20s.
+- **Stack tests** — boots a six-container slice (postgres, redis, cart-service,
+  inventory-service, api-gateway, audit-service) and runs the cart cache e2e
+  test plus all four concurrency checks. ~1m30s.
 
 `test_01` through `test_06` are not in CI. They drive the CQRS pipeline and the
 saga, so they need most of the platform, and a GitHub-hosted runner on a private
