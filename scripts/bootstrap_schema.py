@@ -74,6 +74,7 @@ MIGRATIONS = [
     ("006_dispatcher_claim_lease.sql", ["order_db"]),
     ("007_payment_db_processed_webhooks.sql", ["payment_ledger_db"]),
     ("008_notification_db_delivery_state.sql", ["notification_db"]),
+    ("009_catalog_db_sku_and_is_active.sql", ["catalog_db"]),
 ]
 
 LEDGER_DDL = """

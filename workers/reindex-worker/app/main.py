@@ -28,8 +28,8 @@ from fastapi import FastAPI
 from pythonjsonlogger import jsonlogger
 
 from .reindex_rules import (
-    DEFAULT_BATCH_SIZE, Cursor, build_document, is_complete, next_cursor,
-    should_index,
+    CATALOG_TIMESTAMP_FIELD, DEFAULT_BATCH_SIZE, Cursor, build_document,
+    is_complete, next_cursor, should_index,
 )
 
 handler = logging.StreamHandler()
@@ -63,8 +63,10 @@ _stats = {"passes": 0, "scanned": 0, "indexed": 0, "skipped_newer": 0,
 # name; the products table has no updated_at column of its own.
 SCAN_SQL = """
 SELECT id::text AS product_id,
+       sku,
        name,
        description,
+       is_active,
        created_at AS updated_at
 FROM products
 WHERE ($1::timestamptz IS NULL)
@@ -75,13 +77,18 @@ LIMIT $3
 
 
 def indexed_timestamp(product_id: str):
-    """The updated_at of the document already in the index, or None."""
+    """When this worker last wrote the document, or None.
+
+    Deliberately not the document's updated_at: that is bumped by pricing
+    and inventory too, so comparing against it makes a product with any
+    price history permanently unrepairable by a backfill.
+    """
     try:
         res = es.get(index=INDEX_NAME, id=product_id,
-                     source_includes=["updated_at"], ignore=[404])
+                     source_includes=[CATALOG_TIMESTAMP_FIELD], ignore=[404])
         if not res or not res.get("found"):
             return None
-        return (res.get("_source") or {}).get("updated_at")
+        return (res.get("_source") or {}).get(CATALOG_TIMESTAMP_FIELD)
     except Exception as e:
         # Treated as "unknown", which resolves to indexing. A read failure must
         # not quietly turn into a skipped document.

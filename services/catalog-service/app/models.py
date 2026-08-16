@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Integer, DateTime, ForeignKey
+from sqlalchemy import Boolean, Column, String, Integer, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from .database import Base
@@ -19,9 +19,16 @@ class Product(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=False)
+    # Stock keeping unit. Unique because it identifies the product to
+    # everything outside this system, and normalised to upper case on the
+    # way in so "abc-1" and "ABC-1" cannot both exist.
+    sku = Column(String(64), nullable=False, unique=True, index=True)
     name = Column(String(255), nullable=False)
     description = Column(String)
     price_cents = Column(Integer, nullable=False)
+    # Was accepted by the API and never stored, so every product was active
+    # forever and is_active=false was silently discarded.
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     category = relationship("Category", back_populates="products")

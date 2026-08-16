@@ -1,10 +1,12 @@
 import uuid
 from datetime import datetime, timezone
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from fastapi import HTTPException
 from ..models import Product, OutboxMessage, IdempotencyKey
 from ..schemas import ProductCreate
+from .catalog_rules import InvalidSku, build_product_event, normalize_sku
 
 async def create_product(db: AsyncSession, product_in: ProductCreate, idempotency_key: str) -> Product:
     # Check idempotency
@@ -14,26 +16,31 @@ async def create_product(db: AsyncSession, product_in: ProductCreate, idempotenc
     if result.rowcount == 0:
         raise HTTPException(status_code=409, detail="Idempotency key already processed")
 
+    try:
+        sku = normalize_sku(product_in.sku)
+    except InvalidSku as e:
+        await db.rollback()
+        raise HTTPException(status_code=422, detail=str(e))
+
     # Create Product
     product_id = uuid.uuid4()
     product = Product(
         id=product_id,
         category_id=product_in.category_id,
+        sku=sku,
         name=product_in.name,
         description=product_in.description,
-        price_cents=product_in.price_cents
+        price_cents=product_in.price_cents,
+        is_active=product_in.is_active
     )
     db.add(product)
 
-    # Create OutboxMessage
-    payload = {
-        "id": str(product.id),
-        "category_id": str(product.category_id),
-        "name": product.name,
-        "description": product.description,
-        "price_cents": product.price_cents,
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
+    # Create OutboxMessage. Built from the stored row by build_product_event,
+    # which fails loudly if a field the read model needs is missing -- this
+    # payload used to omit sku and is_active entirely, so every indexed
+    # product had a null SKU and was active whatever the caller asked for.
+    payload = build_product_event(
+        product, datetime.now(timezone.utc).isoformat())
     outbox_message = OutboxMessage(
         aggregate_type="Product",
         aggregate_id=str(product.id),
@@ -45,9 +52,20 @@ async def create_product(db: AsyncSession, product_in: ProductCreate, idempotenc
     try:
         await db.commit()
         await db.refresh(product)
+    except IntegrityError as e:
+        await db.rollback()
+        # sku is unique now, so a duplicate is an ordinary client mistake and
+        # must not be reported as a server fault: a 500 tells the caller to
+        # retry, and retrying a duplicate SKU fails identically forever.
+        if "ux_products_sku" in str(e.orig) or "sku" in str(e.orig):
+            raise HTTPException(
+                status_code=409,
+                detail=f"sku {sku!r} already exists")
+        # Anything else is a genuine constraint problem -- an unknown
+        # category_id, most likely -- which is also the caller's, not ours.
+        raise HTTPException(status_code=422, detail=str(e.orig))
     except Exception as e:
         await db.rollback()
-        # In a real scenario, handle constraint violations separately (e.g. invalid category_id)
         raise HTTPException(status_code=500, detail=str(e))
 
     return product

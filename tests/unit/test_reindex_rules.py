@@ -80,6 +80,28 @@ def test_timestamps_are_serialised():
     assert isinstance(doc["updated_at"], str)
 
 
+def test_the_document_carries_a_catalog_owned_timestamp():
+    # The guard reads this rather than updated_at, which pricing and inventory
+    # also write. Without it, a product whose price changed after creation has
+    # an indexed updated_at newer than its catalog row forever, and the backfill
+    # skips it every pass -- two documents were permanently unrepairable that
+    # way before this field existed.
+    doc = build_document(catalog_row())
+    assert doc[reindex_rules.CATALOG_TIMESTAMP_FIELD] == doc["updated_at"]
+
+
+def test_the_catalog_timestamp_is_not_a_foreign_field():
+    assert reindex_rules.CATALOG_TIMESTAMP_FIELD not in reindex_rules.FOREIGN_FIELDS
+
+
+def test_sku_and_is_active_are_carried():
+    # They are real columns as of migration 009; before it they were referenced
+    # by the mapping and the event but stored nowhere.
+    doc = build_document(catalog_row(sku="SKU-1", is_active=False))
+    assert doc["sku"] == "SKU-1"
+    assert doc["is_active"] is False
+
+
 # ---------------------------------------------------------------------------
 # freshness guard
 # ---------------------------------------------------------------------------

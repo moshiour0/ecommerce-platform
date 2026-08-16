@@ -25,6 +25,15 @@ newer incremental update is a regression that lasts until that product changes
 again. Hence the freshness guard: a source row is only written when the indexed
 copy is not already newer.
 
+The guard compares against `catalog_updated_at`, not the document's
+`updated_at`. That distinction was learned the hard way: `updated_at` is written
+by all three owners, so a price change bumps it past the catalog row's timestamp
+and the backfill then skips that product forever. Two documents were
+permanently un-repairable for exactly this reason -- the guard was comparing a
+catalog timestamp against a mark left by pricing. `catalog_updated_at` is
+written only by this worker, so passes compare like with like, and a document
+that has never been reindexed simply has none and is written once.
+
 That guard is a read-then-write and therefore racy in the small -- an update
 landing between the read and the write still loses. Narrowing the window is
 worth doing even though closing it here is not possible; closing it properly
@@ -39,15 +48,13 @@ from typing import Any, Dict, List, Optional, Tuple
 # Exactly the fields catalog-service owns. Adding price_cents or
 # quantity_available here would make a backfill erase live data.
 #
-# Two of these are aspirational against the current schema. catalog_db.products
-# has id, category_id, name, description, price_cents and created_at -- there is
-# no sku and no is_active column, even though both appear in the Elasticsearch
-# mapping and in the ProductCreated event that stream-processor indexes. They
-# reach the read model through the event payload and are never persisted by the
-# write model, so a backfill cannot restore them: the source of truth does not
-# know them. build_document only emits fields present on the row, so they are
-# skipped rather than written as nulls, and they are listed here so that the day
-# the columns exist the backfill picks them up without another edit.
+# sku and is_active are real columns as of migration 009. They were listed here
+# before they existed, because the Elasticsearch mapping and the ProductCreated
+# event both referenced them while catalog_db.products did not -- so every
+# indexed product had a null SKU and a backfill had nothing to restore from.
+# build_document only emits fields present on the row, so listing them early was
+# harmless, and the day the columns landed the backfill picked them up with no
+# change here.
 #
 # catalog_db.products DOES have price_cents, and it is deliberately not indexed
 # from here. The read model's price_cents is maintained by pricing-service,
@@ -56,6 +63,11 @@ from typing import Any, Dict, List, Optional, Tuple
 # product back to its base price.
 CATALOG_FIELDS = ("product_id", "sku", "name", "description", "is_active",
                   "updated_at")
+
+# Written only by this worker, and the only thing the freshness guard reads.
+# Sharing `updated_at` with pricing and inventory made the guard compare a
+# catalog timestamp against another service's mark.
+CATALOG_TIMESTAMP_FIELD = "catalog_updated_at"
 
 # Fields owned by other services. Named explicitly so the guarantee is
 # checkable rather than implied by the absence of a name from the list above.
@@ -140,6 +152,11 @@ def build_document(row: Dict[str, Any]) -> Dict[str, Any]:
         if field in row and row[field] is not None:
             value = row[field]
             doc[field] = value.isoformat() if isinstance(value, datetime) else value
+
+    # The guard's own mark, so the next pass compares this worker's previous
+    # write rather than whatever any other writer last did to the document.
+    if "updated_at" in doc:
+        doc[CATALOG_TIMESTAMP_FIELD] = doc["updated_at"]
     return doc
 
 

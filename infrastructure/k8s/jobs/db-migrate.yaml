@@ -156,6 +156,26 @@ data:
     \ three columns. Without the index it\n-- is a sequential scan of every notification ever sent, repeated\
     \ every poll.\nCREATE INDEX IF NOT EXISTS ix_notification_records_claimable\n    ON public.notification_records\
     \ (status, next_attempt_at, claimed_at);\n"
+  009_catalog_db_sku_and_is_active.sql: "-- 009 (catalog_db): give products the sku and is_active they\
+    \ always claimed\n--\n-- Both fields existed everywhere except in the table. The API accepted a sku\n\
+    -- and discarded it, the Elasticsearch mapping declared one, and the indexer\n-- read payload.get(\"\
+    sku\") -- which was always None, because catalog never put\n-- it in the event. Every indexed product\
+    \ had a null SKU. is_active was worse:\n-- accepted, never stored, echoed back as true by a response-schema\
+    \ default, and\n-- indexed as true, so is_active=false was impossible to express.\n--\n-- Existing\
+    \ rows need a sku before the column can be NOT NULL and UNIQUE, and\n-- there is no real value to\
+    \ give them -- the ones their creators sent were\n-- thrown away. A deterministic placeholder derived\
+    \ from the primary key is used\n-- instead: unique by construction, obviously synthetic to anyone\
+    \ reading it,\n-- and stable if this migration is applied twice.\n--\n--   psql -U admin -d catalog_db\
+    \ -f migrations/009_catalog_db_sku_and_is_active.sql\n--\n-- Idempotent.\n\n-- Nullable first: the\
+    \ backfill cannot run against a NOT NULL column.\nALTER TABLE public.products\n    ADD COLUMN IF NOT\
+    \ EXISTS sku varchar(64);\n\nALTER TABLE public.products\n    ADD COLUMN IF NOT EXISTS is_active boolean\
+    \ NOT NULL DEFAULT true;\n\n-- 'SKU-' plus the first ten hex characters of the id. Upper case to match\
+    \ the\n-- normalisation the service applies, and derived from a UUID so collisions are\n-- not a practical\
+    \ concern.\nUPDATE public.products\nSET sku = 'SKU-' || upper(substring(replace(id::text, '-', '')\
+    \ from 1 for 10))\nWHERE sku IS NULL;\n\nALTER TABLE public.products\n    ALTER COLUMN sku SET NOT\
+    \ NULL;\n\n-- Unique because a SKU identifies the product to everything outside this\n-- system. Created\
+    \ as an index rather than a table constraint so IF NOT EXISTS\n-- applies and re-running is safe.\n\
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_products_sku\n    ON public.products (sku);\n"
 
 ---
 apiVersion: batch/v1
