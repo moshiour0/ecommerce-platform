@@ -41,13 +41,26 @@ INVENTORY_RELEASED = "InventoryReleased"
 INDEXED_EVENTS = frozenset({PRODUCT_CREATED, PRICE_UPDATED, INVENTORY_RESERVED})
 
 
+# The Kafka header the Debezium EventRouter is configured to carry the outbox
+# `type` column in. Headers rather than the message envelope because the
+# envelope is part of the Avro value schema, and adding a field there is
+# rejected by the FULL_TRANSITIVE compatibility the registry enforces.
+TYPE_HEADER = "eventType"
+
+
 def infer_event_type(msg_data: Dict[str, Any],
-                     payload: Dict[str, Any]) -> Optional[str]:
+                     payload: Dict[str, Any],
+                     headers: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """The event's type, or None when it cannot be established.
 
-    An explicit type always wins; the shape checks are a fallback for payloads
-    that carry none. None means "unknown", never "probably a product".
+    The header wins, then anything explicit on the message, and the shape
+    checks are the last resort for events published before the connectors
+    carried the type. None means "unknown", never "probably a product".
     """
+    from_header = (headers or {}).get(TYPE_HEADER)
+    if from_header:
+        return from_header
+
     explicit = msg_data.get("type") or msg_data.get("event_type")
     if explicit:
         return explicit

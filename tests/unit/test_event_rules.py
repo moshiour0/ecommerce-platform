@@ -118,3 +118,51 @@ def test_either_a_name_or_a_sku_is_enough():
 def test_a_non_dict_is_not_a_product():
     for payload in (None, "x", 3, []):
         assert is_product_payload(payload) is False
+
+
+# ---------------------------------------------------------------------------
+# the type header, which is why the shape checks are now a fallback
+# ---------------------------------------------------------------------------
+
+HEADER = event_rules.TYPE_HEADER
+
+
+def test_the_header_names_the_event():
+    # Debezium carries the outbox `type` column here. It cannot go in the
+    # message envelope: that is part of the Avro value schema and the registry
+    # runs FULL_TRANSITIVE, which rejected the change and failed the connector.
+    labelled = infer_event_type({}, FAILED_RESERVATION,
+                                {HEADER: "InventoryReservationFailed"})
+    assert labelled == "InventoryReservationFailed"
+
+
+def test_the_header_beats_the_shape():
+    # A payload that looks like a product but is labelled otherwise is what it
+    # says it is. Shape sniffing was only ever a workaround for the missing
+    # label.
+    product_shaped = {"id": "p", "name": "Keyboard", "description": "clicky"}
+    assert infer_event_type(
+        {}, product_shaped, {HEADER: "SomethingElse"}) == "SomethingElse"
+
+
+def test_the_header_beats_an_explicit_field():
+    assert infer_event_type(
+        {"type": "FromBody"}, {}, {HEADER: "FromHeader"}) == "FromHeader"
+
+
+def test_an_absent_header_falls_back_to_the_shape():
+    # Events published before the connectors carried the header still have to
+    # be identified.
+    assert infer_event_type(
+        {}, FAILED_RESERVATION, {}) == "InventoryReservationFailed"
+    assert infer_event_type(
+        {}, FAILED_RESERVATION, None) == "InventoryReservationFailed"
+
+
+def test_an_empty_header_value_falls_back():
+    assert infer_event_type(
+        {}, {"base_price_cents": 1}, {HEADER: ""}) == "PriceUpdated"
+
+
+def test_unrelated_headers_are_ignored():
+    assert infer_event_type({}, {}, {"id": "x", "timestamp": "y"}) is None

@@ -20,7 +20,7 @@
     "transforms.outbox.table.field.event.type": "type",
     "transforms.outbox.table.field.event.payload": "payload",
     "transforms.outbox.route.by.field": "aggregate_type",
-    "transforms.outbox.table.fields.additional.placement": "created_at:header:timestamp",
+    "transforms.outbox.table.fields.additional.placement": "created_at:header:timestamp,type:header:eventType",
     "key.converter": "org.apache.kafka.connect.storage.StringConverter",
     "value.converter": "io.confluent.connect.avro.AvroConverter",
     "value.converter.schema.registry.url": "http://schema-registry:8081"

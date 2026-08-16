@@ -32,7 +32,29 @@ class KafkaAvroConsumer:
         }
         self.dlq_producer = Producer(producer_conf)
 
-    def consume(self, process_func: Callable[[Any], None]):
+    @staticmethod
+    def decode_headers(msg) -> dict:
+        """Kafka headers as a plain str->str dict.
+
+        Headers are the only place an outbox event's type can travel. The
+        Debezium EventRouter can put extra columns in the message envelope
+        instead, but that changes the Avro value schema, and the Schema
+        Registry runs FULL_TRANSITIVE (Rule 5) -- attempting it failed the
+        connector outright with "Schema being registered is incompatible with
+        an earlier schema". A header is outside the value, so it costs no
+        schema version.
+        """
+        out = {}
+        for key, value in (msg.headers() or []):
+            if isinstance(value, bytes):
+                try:
+                    value = value.decode("utf-8")
+                except UnicodeDecodeError:
+                    value = None
+            out[key] = value
+        return out
+
+    def consume(self, process_func: Callable[..., None]):
         logger.info(f"Starting consumer for topics: {self.topics}")
         try:
             while True:
@@ -56,7 +78,10 @@ class KafkaAvroConsumer:
                 try:
                     ctx = SerializationContext(original_topic, MessageField.VALUE)
                     deserialized_value = self.avro_deserializer(raw_value, ctx)
-                    process_func(deserialized_value)
+                    # Two arguments now: the value, and the headers that
+                    # carry the event type. stream-processor is the only
+                    # consumer of this class.
+                    process_func(deserialized_value, self.decode_headers(msg))
                     self.consumer.commit(asynchronous=False)
                     logger.debug(f"Successfully processed and committed message from {original_topic}")
                 except Exception as e:

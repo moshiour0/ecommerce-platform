@@ -41,7 +41,7 @@ def main():
         "inventory.events"
     ]
 
-    def callback_wrapper(msg_data):
+    def callback_wrapper(msg_data, headers=None):
         import json
         
         if isinstance(msg_data, str):
@@ -67,7 +67,7 @@ def main():
         # fields. See event_rules: this used to end in a fallback that called
         # anything unrecognised a ProductCreated, which indexed every failed
         # inventory reservation as a null-filled product.
-        event_type = infer_event_type(msg_data, payload)
+        event_type = infer_event_type(msg_data, payload, headers)
 
         if event_type is None:
             logger.warning(

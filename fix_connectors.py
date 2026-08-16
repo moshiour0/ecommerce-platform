@@ -82,7 +82,14 @@ def provision_connectors():
             "transforms.outbox.table.field.event.type": "type",
             "transforms.outbox.table.field.event.payload": "payload",
             "transforms.outbox.route.by.field": "aggregate_type",
-            "transforms.outbox.table.fields.additional.placement": "created_at:header:timestamp",
+            # The outbox `type` column travels as a Kafka header. It cannot go in the
+            # message envelope: that is part of the Avro value schema, and the
+            # registry runs FULL_TRANSITIVE (Rule 5), which rejected the change
+            # outright -- "Schema being registered is incompatible with an earlier
+            # schema" -- and failed the connector task. Without this header the
+            # consumer has to guess an event's type from the shape of its fields,
+            # and guessing indexed every failed reservation as a product.
+            "transforms.outbox.table.fields.additional.placement": "created_at:header:timestamp,type:header:eventType",
             "key.converter": "org.apache.kafka.connect.storage.StringConverter",
             "value.converter": "io.confluent.connect.avro.AvroConverter",
             "value.converter.schema.registry.url": "http://schema-registry:8081"
