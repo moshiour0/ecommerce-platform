@@ -46,6 +46,8 @@ spec:
           value: postgresql+asyncpg://admin:$(POSTGRES_PASSWORD)@postgres:5432/cart_db
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: http://jaeger:4318
+        - name: REDIS_URL
+          value: redis://redis:6379/0
         resources:
           requests:
             cpu: 50m

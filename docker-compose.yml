@@ -48,6 +48,18 @@ services:
     restart: unless-stopped
     ports:
       - "6379:6379"
+    # The image declares VOLUME /data, so without a named volume here Docker
+    # creates an anonymous one per container and every recreate starts empty.
+    # That is why a rebuild lost every cart and every rate-limit counter.
+    #
+    # Redis keeps its default RDB save points (60s/10000 changes at the
+    # tightest) and saves on SIGTERM, so an ordinary `compose down` loses
+    # nothing. A kill -9 loses at most the window since the last snapshot.
+    # AOF would cut that to a second, at the cost of a write per command;
+    # carts are backed by Postgres and rate-limit budgets are meant to be
+    # short-lived, so neither is worth it here.
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -220,3 +232,4 @@ networks:
 
 volumes:
   postgres_data:
+  redis_data:

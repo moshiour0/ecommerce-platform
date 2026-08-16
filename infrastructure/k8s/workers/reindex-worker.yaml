@@ -46,6 +46,12 @@ spec:
           value: reindex-worker
         - name: PYTHONPATH
           value: /app:/app/shared_libs
+        - name: REAP_GRACE_SECONDS
+          value: '3600'
+        - name: REAP_ORPHANS
+          value: 'false'
+        - name: REAP_UNDATED
+          value: 'false'
         - name: REINDEX_INTERVAL_SECONDS
           value: '0'
         resources:

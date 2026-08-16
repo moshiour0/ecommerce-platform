@@ -94,12 +94,14 @@ down:
 logs:
 	$(COMPOSE) logs -f
 
-# DESTRUCTIVE: -v deletes ecommerce-platform_postgres_data and every other
-# volume. All order, payment and catalog data is gone and is not recoverable.
+# DESTRUCTIVE: -v deletes ecommerce-platform_postgres_data, redis_data and
+# every other volume. All order, payment and catalog data is gone and is not
+# recoverable, along with every live cart and rate-limit counter.
 # .env is deliberately NOT removed: it is gitignored and holds the generated
 # JWT_SECRET, and regenerating it invalidates every issued token.
 clean:
-	@echo "This deletes ALL database volumes. Order, payment and catalog data will be lost."
+	@echo "This deletes ALL volumes. Order, payment and catalog data will be lost,"
+	@echo "along with every cart and rate-limit counter held in Redis."
 	@printf "Type 'yes' to continue: " && read ans && [ "$$ans" = "yes" ]
 	$(COMPOSE) down -v
 	@echo "Volumes removed. Run 'make init' to rebuild from empty."

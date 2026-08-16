@@ -181,6 +181,8 @@ services:
       - "8007:8007"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/cart_db
+      # Cart contents and the checkout mutex both live here.
+      - REDIS_URL=redis://redis:6379/0
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8007" ]
 
