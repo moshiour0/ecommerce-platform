@@ -105,3 +105,10 @@ search_rules = load_module(
     "search_rules_under_test",
     "services/search-service/app/services/search_rules.py",
 )
+
+# The shared library, loaded from its file like everything else so the unit
+# tier still needs nothing on PYTHONPATH.
+read_model = load_module(
+    "read_model_under_test",
+    "shared/libs/python-common/read_model.py",
+)

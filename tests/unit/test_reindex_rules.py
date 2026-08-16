@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from conftest import reindex_rules
+from conftest import read_model, reindex_rules
 
 build_document = reindex_rules.build_document
 should_index = reindex_rules.should_index
@@ -193,3 +193,25 @@ def test_a_short_batch_means_the_scan_is_done():
 
 def test_a_full_batch_means_there_is_more():
     assert is_complete([catalog_row()] * 500, batch_size=500) is False
+
+
+# ---------------------------------------------------------------------------
+# agreement with the shared ownership table
+# ---------------------------------------------------------------------------
+
+def test_the_catalog_field_list_matches_the_shared_table():
+    # This module keeps its own constant so it stays dependency-free, which
+    # makes drift possible. This is the test that makes drift loud: adding a
+    # field here that catalog does not own would let a backfill erase it.
+    assert set(reindex_rules.CATALOG_FIELDS) <= read_model.fields_owned_by(
+        read_model.CATALOG)
+
+
+def test_the_foreign_field_list_matches_the_shared_table():
+    assert set(reindex_rules.FOREIGN_FIELDS) == read_model.foreign_fields(
+        read_model.CATALOG)
+
+
+def test_the_catalog_timestamp_is_catalog_owned_in_the_shared_table():
+    assert read_model.PRODUCT_FIELD_OWNERS[
+        reindex_rules.CATALOG_TIMESTAMP_FIELD] == read_model.CATALOG

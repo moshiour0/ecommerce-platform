@@ -27,6 +27,8 @@ from elasticsearch import Elasticsearch
 from fastapi import FastAPI
 from pythonjsonlogger import jsonlogger
 
+from python_common.read_model import CATALOG, write_product
+
 from .reindex_rules import (
     CATALOG_TIMESTAMP_FIELD, DEFAULT_BATCH_SIZE, Cursor, build_document,
     is_complete, next_cursor, should_index,
@@ -100,9 +102,14 @@ def indexed_timestamp(product_id: str):
 
 
 def write_document(product_id: str, doc: dict) -> None:
-    """Partial update, so fields owned by other services survive."""
-    es.update(index=INDEX_NAME, id=product_id,
-              body={"doc": doc, "doc_as_upsert": True})
+    """Partial update, so fields owned by other services survive.
+
+    Routed through the shared helper, which refuses anything catalog does not
+    own. build_document already filters to CATALOG_FIELDS, so this is a second
+    check of the same rule -- deliberately, because the first one is a constant
+    in this repository and the second is the platform-wide table.
+    """
+    write_product(es, product_id, CATALOG, doc, index=INDEX_NAME)
 
 
 async def run_pass(pool) -> None:
