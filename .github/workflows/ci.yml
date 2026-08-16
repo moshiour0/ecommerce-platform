@@ -26,9 +26,9 @@ jobs:
     name: Python unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -42,14 +42,18 @@ jobs:
     name: API gateway unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      # 18 to match the runtime image (docker/Dockerfile.node builds on
-      # node:18-alpine). Testing on a newer Node than production ships would
-      # hide exactly the kind of version difference that `npm test` already ran
-      # into: naming the test files explicitly works on one version and not the
-      # other, which is why the script is a bare `node --test`.
-      - uses: actions/setup-node@v4
+      # node-version is the Node the TESTS run on, and is 18 to match the
+      # runtime image (docker/Dockerfile.node builds on node:18-alpine). It is
+      # unrelated to the Node the action itself runs on, which is node24 as of
+      # v7 -- do not raise this to match that.
+      #
+      # Testing on a newer Node than production ships would hide exactly the
+      # kind of version difference that `npm test` already ran into: naming the
+      # test files explicitly works on one version and not the other, which is
+      # why the script is a bare `node --test`.
+      - uses: actions/setup-node@v7
         with:
           node-version: '18'
 
