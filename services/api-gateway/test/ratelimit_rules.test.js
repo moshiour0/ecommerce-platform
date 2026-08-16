@@ -2,7 +2,14 @@
 
 // Unit tests for the rate limiter's decisions.
 //
-// Run with:  node --test services/api-gateway/test/
+// Run with:  npm test          (from services/api-gateway)
+//
+// That is a bare `node --test`, with no path argument, because the ways of
+// naming test files are not portable across the versions this repo runs on:
+// `node --test "test/**/*.test.js"` fails on Node 18 ("Could not find"), which
+// is what the service image and CI use, while `node --test test/` fails on
+// Node 24 on Windows, which is where it gets run by hand. Bare --test discovers
+// them on both, and skips node_modules by default.
 //
 // Uses node:test, which is built into Node 18+, so this adds no dependency to a
 // service image built with `npm install --production`. These tests pin the

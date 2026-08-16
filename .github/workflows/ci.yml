@@ -1,0 +1,61 @@
+# CI
+#
+# Runs the two unit tiers on every push and pull request. Both finish in
+# seconds and need no infrastructure, because every module under test is a pure
+# function extracted from its service for exactly this reason.
+#
+# The integration and e2e suites are NOT here. They need the full compose stack
+# — Postgres, Kafka, Redis, Elasticsearch, Debezium — and assert things like
+# "exactly one of ten parallel checkouts wins", which needs a real environment
+# rather than a mocked one. They stay manual: tests/integration/README.md and
+# tests/e2e/README.md.
+#
+# There were two 0-byte workflow files in ci/.github/workflows/ before this.
+# GitHub only reads .github/workflows at the repository root, so nothing had
+# ever run.
+
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  python-unit:
+    name: Python unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: pip install -r tests/requirements.txt
+
+      - name: Run unit tests
+        run: python -m pytest tests/unit -q
+
+  gateway-unit:
+    name: API gateway unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 18 to match the runtime image (docker/Dockerfile.node builds on
+      # node:18-alpine). Testing on a newer Node than production ships would
+      # hide exactly the kind of version difference that `npm test` already ran
+      # into: naming the test files explicitly works on one version and not the
+      # other, which is why the script is a bare `node --test`.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      # No install step: the tests use node:test from the standard library and
+      # the service has no dev dependencies. There is no package-lock.json
+      # either, so `npm ci` would fail here.
+      - name: Run unit tests
+        run: npm test
+        working-directory: services/api-gateway

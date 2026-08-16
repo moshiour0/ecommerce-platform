@@ -1,0 +1,13 @@
+# Test-only dependencies for the unit tier (tests/unit).
+#
+# This is the complete list, and deliberately short: every module under test is
+# pure standard library, loaded straight from its file by tests/unit/conftest.py
+# rather than imported as part of a service package. No SQLAlchemy, no redis, no
+# service requirements.txt -- which is exactly why 171 tests run in about a
+# second and need no infrastructure to run at all.
+#
+# pytest-asyncio is not optional: pytest.ini sets asyncio_mode=auto, and without
+# the plugin pytest rejects that as an unknown config option before it collects
+# anything.
+pytest==9.1.1
+pytest-asyncio==1.4.0

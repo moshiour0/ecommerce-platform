@@ -68,8 +68,10 @@ verify:
 
 # Unit tests for the gateway's rate-limit decisions. node:test ships with
 # Node 18+, so there is no dev dependency to install and no stack to bring up.
+# Bare `node --test` on purpose: naming the files explicitly is not portable
+# across Node 18 and Node 24. See the header of the test file.
 test-gateway:
-	cd services/api-gateway && node --test "test/**/*.test.js"
+	cd services/api-gateway && node --test
 
 # Burst check against a running gateway. The script is piped in over stdin
 # rather than bind-mounted: no service image ships curl, and MSYS rewrites the
