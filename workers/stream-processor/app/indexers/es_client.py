@@ -28,6 +28,9 @@ INDEX_MAPPING = {
     "mappings": {
         "properties": {
             "product_id": {"type": "keyword"},
+            # keyword, not text: sellers are filtered and aggregated on,
+            # never full-text searched.
+            "seller_id": {"type": "keyword"},
             "sku": {"type": "keyword"},
             "name": {"type": "text"},
             "description": {"type": "text"},

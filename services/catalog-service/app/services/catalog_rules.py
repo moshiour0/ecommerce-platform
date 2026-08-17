@@ -27,9 +27,15 @@ from typing import Any, Dict, Optional
 # rest are here because a consumer added later should not have to ask catalog
 # for what it already knew at publish time.
 PRODUCT_EVENT_FIELDS = (
-    "id", "category_id", "sku", "name", "description", "price_cents",
-    "is_active", "created_at",
+    "id", "seller_id", "category_id", "sku", "name", "description",
+    "price_cents", "is_active", "created_at",
 )
+
+# The platform seller: a sentinel, not a merchant. Products created before
+# sellers existed belong to it, and it is the default until seller-service can
+# issue real ids. Deliberately greppable -- every reference to it is a place
+# that still assumes a single tenant.
+PLATFORM_SELLER_ID = "00000000-0000-0000-0000-000000000001"
 
 # SKUs are compared exactly and used as an Elasticsearch keyword, so casing and
 # stray whitespace are differences that nobody intends. Normalised once, on the
@@ -72,6 +78,9 @@ def build_product_event(product: Any, created_at_iso: str) -> Dict[str, Any]:
     """
     payload = {
         "id": str(product.id),
+        # Without this the read model cannot tell whose product it is, so no
+        # seller filter, no seller page, and no per-seller ranking signal.
+        "seller_id": str(product.seller_id),
         "category_id": str(product.category_id),
         "sku": product.sku,
         "name": product.name,

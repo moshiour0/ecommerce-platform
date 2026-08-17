@@ -40,6 +40,9 @@ const ANY_OWNER = '*';
 
 const PRODUCT_FIELD_OWNERS = {
   product_id: 'catalog-service',
+  // Whose product this is. Catalog-owned: a seller cannot be reassigned by
+  // a price change or a stock movement.
+  seller_id: 'catalog-service',
   sku: 'catalog-service',
   name: 'catalog-service',
   description: 'catalog-service',

@@ -15,6 +15,10 @@ class CategoryResponse(CategoryBase):
     model_config = ConfigDict(from_attributes=True)
 
 class ProductBase(BaseModel):
+    # Optional at the edge and defaulted to the platform seller, because there
+    # is no seller-service to issue real ids yet. Stored NOT NULL, so a product
+    # always has an owner even while that owner is a placeholder.
+    seller_id: Optional[UUID] = None
     category_id: UUID
     # Required. It was silently dropped before -- pydantic discards unknown
     # fields, so callers sent a sku, got a 201, and the product was stored

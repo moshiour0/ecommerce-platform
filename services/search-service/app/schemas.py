@@ -14,6 +14,9 @@ class SearchResultItem(BaseModel):
     # unpriced. Exposed so a caller does not have to guess whether a low
     # number is a discount or a fallback.
     price_source: str = "unpriced"
+    # Whose product this is. Present so a client can render the shop name
+    # without a second call.
+    seller_id: Optional[str] = None
     quantity_available: int = 0
 
     model_config = ConfigDict(from_attributes=True)

@@ -4,8 +4,8 @@ Reindex decisions, as pure functions.
 A backfill rebuilds the `products` read model from the catalog, which sounds
 like "write the document" and is not. The document has three owners:
 
-    catalog-service    product_id, sku, name, description, is_active,
-                       base_price_cents (the list price)
+    catalog-service    product_id, seller_id, sku, name, description,
+                       is_active, base_price_cents (the list price)
     pricing-service    price_cents (the effective price)
     inventory-service  quantity_available
 
@@ -66,8 +66,8 @@ from typing import Any, Dict, List, Optional, Tuple
 # and let a backfill roll every product back to whatever it was created at.
 # Under its own name it has a single writer and search falls back to it only
 # when pricing has published nothing.
-CATALOG_FIELDS = ("product_id", "sku", "name", "description", "is_active",
-                  "base_price_cents", "updated_at")
+CATALOG_FIELDS = ("product_id", "seller_id", "sku", "name", "description",
+                  "is_active", "base_price_cents", "updated_at")
 
 # Written only by this worker, and the only thing the freshness guard reads.
 # Sharing `updated_at` with pricing and inventory made the guard compare a

@@ -23,6 +23,8 @@ class FakeProduct:
 
     def __init__(self, **kw):
         self.id = kw.get("id", "11111111-1111-1111-1111-111111111111")
+        self.seller_id = kw.get("seller_id",
+                                "00000000-0000-0000-0000-000000000001")
         self.category_id = kw.get("category_id",
                                   "22222222-2222-2222-2222-222222222222")
         self.sku = kw.get("sku", "SKU-ABC123")
@@ -129,3 +131,30 @@ def test_a_dropped_field_fails_loudly():
 def test_null_description_survives_as_none():
     payload = build_product_event(FakeProduct(description=None), "t")
     assert payload["description"] is None
+
+
+# ---------------------------------------------------------------------------
+# multi-tenancy: every product has an owner
+# ---------------------------------------------------------------------------
+
+def test_the_event_carries_the_seller():
+    # Without it the read model cannot tell whose product this is: no seller
+    # filter, no shop page, no per-seller ranking signal.
+    payload = build_product_event(FakeProduct(seller_id="seller-9"), "t")
+    assert payload["seller_id"] == "seller-9"
+
+
+def test_seller_id_is_part_of_the_event_contract():
+    assert "seller_id" in PRODUCT_EVENT_FIELDS
+
+
+def test_the_platform_seller_is_a_fixed_sentinel():
+    # Products that existed before sellers did belong to it. It is deliberately
+    # greppable: every reference is a place that still assumes one tenant.
+    assert catalog_rules.PLATFORM_SELLER_ID == "00000000-0000-0000-0000-000000000001"
+
+
+def test_the_seller_is_serialised_as_a_string():
+    # It travels through JSONB and Avro; a UUID object is not JSON.
+    payload = build_product_event(FakeProduct(), "t")
+    assert isinstance(payload["seller_id"], str)

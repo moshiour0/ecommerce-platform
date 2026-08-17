@@ -82,6 +82,7 @@ _stats = {"passes": 0, "scanned": 0, "indexed": 0, "skipped_newer": 0,
 # name; the products table has no updated_at column of its own.
 SCAN_SQL = """
 SELECT id::text AS product_id,
+       seller_id::text AS seller_id,
        sku,
        name,
        description,

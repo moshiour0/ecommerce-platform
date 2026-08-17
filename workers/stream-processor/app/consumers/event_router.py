@@ -25,6 +25,7 @@ def process_event(event_type: str, payload: Dict[str, Any]):
         if event_type == "ProductCreated":
             doc_id = payload.get("id")
             write_product(es, doc_id, CATALOG, {
+                "seller_id": payload.get("seller_id"),
                 "sku": payload.get("sku"),
                 "name": payload.get("name"),
                 "description": payload.get("description"),

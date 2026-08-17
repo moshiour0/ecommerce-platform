@@ -26,8 +26,9 @@ model assumes one seller: products have no owner, inventory has no warehouse,
 orders cannot be split, and there is no concept of a payout. Tax, promotions,
 fraud and delivery quoting are 200-line placeholders. Nothing is deployed.
 
-(Multi-item checkout was on this list until 2026-08-16, when the dispatcher was
-reserving only the first line of every order. It is fixed and tested.)
+(Two items came off this list on 2026-08-16: multi-item checkout, where the
+dispatcher reserved only the first line of every order, and `seller_id`, which
+now exists on every product and flows through to search.)
 
 So this plan is not "add features". Phases 0 and 1 are largely a **re-modelling**
 of what exists, and that is normal: single-tenant to multi-tenant is the most
@@ -532,16 +533,14 @@ Concrete, small, and each one buys information or removes risk:
 
 1. **Decide D1, D2 and D3 in writing** and add them to
    `ARCHITECTURE_STATE_FINAL.md`. Half a day, and it determines a year of work.
-2. **Add `seller_id` to products** behind a nullable column with a default
-   seller. It is the smallest possible step into multi-tenancy and it surfaces
-   every place that assumes one seller.
-3. **Add the Media Center seam** from §3.6 — the `purpose` column, the event
+2. **Add the Media Center seam** from §3.6 — the `purpose` column, the event
    contracts in the architecture document, the reserved ports. One afternoon.
-4. **Set Kafka to RF=3 and give Redis a replica** in the compose file, so your
+3. **Set Kafka to RF=3 and give Redis a replica** in the compose file, so your
    local environment stops teaching you habits that fail in production.
 
-I can do any of these with you; the `seller_id` column and the Media Center
-seam are the ones I would start on immediately.
+`seller_id` landed on 2026-08-16: every product has an owner, the event and
+the read model carry it, and search can be filtered to one seller. The Media
+Center seam is the one I would do next.
 
 ---
 

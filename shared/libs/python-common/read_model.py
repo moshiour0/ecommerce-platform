@@ -45,6 +45,9 @@ ANY_OWNER = "*"
 
 PRODUCT_FIELD_OWNERS: Mapping[str, str] = {
     "product_id": CATALOG,
+    # Whose product this is. Catalog-owned: a seller cannot be reassigned
+    # by a price change or a stock movement.
+    "seller_id": CATALOG,
     "sku": CATALOG,
     "name": CATALOG,
     "description": CATALOG,

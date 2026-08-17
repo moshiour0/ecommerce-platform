@@ -18,6 +18,10 @@ class Product(Base):
     __tablename__ = "products"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # No foreign key: sellers are owned by another service and another
+    # database, and an FK across a service boundary is the coupling Rule 1
+    # forbids. category_id has one because categories genuinely live here.
+    seller_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=False)
     # Stock keeping unit. Unique because it identifies the product to
     # everything outside this system, and normalised to upper case on the

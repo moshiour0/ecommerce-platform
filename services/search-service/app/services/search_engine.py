@@ -4,7 +4,8 @@ from .search_rules import effective_price
 
 INDEX_NAME = "products"
 
-async def search_products(es: AsyncElasticsearch, query: str, page: int, size: int) -> SearchResponse:
+async def search_products(es: AsyncElasticsearch, query: str, page: int,
+                          size: int, seller_id: str = None) -> SearchResponse:
     from_offset = (page - 1) * size
 
     body = {
@@ -45,6 +46,12 @@ async def search_products(es: AsyncElasticsearch, query: str, page: int, size: i
         }
     }
 
+    # One seller's shop front. A term filter rather than a query so it does
+    # not affect scoring: restricting to a seller should not reorder their
+    # products relative to each other.
+    if seller_id:
+        body["query"]["bool"]["filter"].append({"term": {"seller_id": seller_id}})
+
     # If the user provides an empty query, fallback to match_all
     if not query:
         body["query"]["bool"]["must"] = [{"match_all": {}}]
@@ -67,6 +74,7 @@ async def search_products(es: AsyncElasticsearch, query: str, page: int, size: i
             description=source.get("description"),
             price_cents=price,
             price_source=price_source,
+            seller_id=source.get("seller_id"),
             quantity_available=source.get("quantity_available", 0)
         ))
 

@@ -6,7 +6,9 @@ from sqlalchemy.future import select
 from fastapi import HTTPException
 from ..models import Product, OutboxMessage, IdempotencyKey
 from ..schemas import ProductCreate
-from .catalog_rules import InvalidSku, build_product_event, normalize_sku
+from .catalog_rules import (
+    PLATFORM_SELLER_ID, InvalidSku, build_product_event, normalize_sku,
+)
 
 async def create_product(db: AsyncSession, product_in: ProductCreate, idempotency_key: str) -> Product:
     # Check idempotency
@@ -26,6 +28,8 @@ async def create_product(db: AsyncSession, product_in: ProductCreate, idempotenc
     product_id = uuid.uuid4()
     product = Product(
         id=product_id,
+        # Defaults to the platform seller until seller-service exists.
+        seller_id=product_in.seller_id or uuid.UUID(PLATFORM_SELLER_ID),
         category_id=product_in.category_id,
         sku=sku,
         name=product_in.name,
