@@ -1,9 +1,10 @@
 """
 Media lifecycle decisions, as pure functions.
 
-This service owns metadata and state, not bytes: its database is media_meta_db,
-and the platform has no object store. An asset here is a record of something
-uploaded elsewhere, plus the question this module answers -- may it be served?
+This service owns metadata and state, not bytes: its database is media_meta_db
+and the bytes live in an object store, reached by pre-signed URLs so they
+never pass through any service. An asset here is that record, plus the two
+questions this module answers -- may it be served, and to whom?
 
 Quarantine is the default, not a state something is moved into
 ------------------------------------------------------------
@@ -84,12 +85,19 @@ def is_servable(status) -> bool:
     return status == MediaStatus.CLEAN or status == MediaStatus.CLEAN.value
 
 
-def plan_registration(filename: str, content_type: str, size_bytes: int) -> Decision:
-    """Validate an upload's metadata and place it in quarantine."""
+def plan_registration(filename: str, content_type: str, size_bytes: int,
+                      allowed: Optional[Set[str]] = None) -> Decision:
+    """Validate an upload's metadata and place it in quarantine.
+
+    `allowed` overrides the default content-type allowlist, because what is
+    acceptable depends on what the asset is for: a KYC document may be a
+    PDF and a listing photo may not.
+    """
+    permitted = ALLOWED_CONTENT_TYPES if allowed is None else allowed
     if not filename or not filename.strip():
         return Decision(Outcome.INVALID, None, None, "filename is required")
 
-    if content_type not in ALLOWED_CONTENT_TYPES:
+    if content_type not in permitted:
         return Decision(
             Outcome.INVALID, None, None,
             f"content type {content_type!r} is not allowed")
@@ -165,3 +173,115 @@ def plan_delete(current: MediaStatus) -> Decision:
         return Decision(Outcome.OK, MediaStatus.DELETED, None, "already deleted")
 
     return Decision(Outcome.OK, MediaStatus.DELETED, EVENT_DELETED, "deleted")
+
+
+# ---------------------------------------------------------------------------
+# what an asset is for
+# ---------------------------------------------------------------------------
+#
+# The Media Center seam. Media Center itself is not built -- see
+# MARKETPLACE_ROADMAP.md §3.6 -- but the purpose taxonomy is here now because
+# it decides who may read an asset, and retrofitting that onto a store full of
+# untyped files means auditing every one of them.
+
+
+class AssetPurpose(str, Enum):
+    PRODUCT_IMAGE = "product_image"      # a listing photo: public once clean
+    SELLER_DOCUMENT = "seller_document"  # KYC, trade licence, bank details
+    TRY_ON_SOURCE = "try_on_source"      # a photo of a person's body
+    POST_MEDIA = "post_media"            # shared to the social feed on purpose
+
+
+# Purposes whose contents must never be handed out by a public endpoint, even
+# once scanned clean.
+#
+# seller_document is obvious: it is identity papers and bank details.
+#
+# try_on_source is the one worth stating explicitly, because it does not look
+# like a secret in a database and it is the most sensitive thing this platform
+# will ever hold. It is a photograph of a person's body, uploaded so software
+# can put clothes on it. Treating it like a product image because both are
+# JPEGs is exactly the mistake that ends a company. Only the uploader and the
+# try-on pipeline may read one, and it never becomes servable by being scanned.
+CONFIDENTIAL_PURPOSES: Set[AssetPurpose] = {
+    AssetPurpose.SELLER_DOCUMENT,
+    AssetPurpose.TRY_ON_SOURCE,
+}
+
+# Documents are the only purpose that may be a PDF; a listing photo that is a
+# PDF is a mistake, and a body photo that is one is something stranger.
+DOCUMENT_CONTENT_TYPES: Set[str] = {"application/pdf"}
+
+
+def is_confidential(purpose) -> bool:
+    """Whether an asset's contents are private to its owner.
+
+    Unknown purposes are confidential. A purpose this code does not recognise
+    was added by someone who did not update this function, and the failure that
+    matters is the one where a new kind of upload is public by default.
+    """
+    try:
+        purpose = AssetPurpose(purpose)
+    except ValueError:
+        return True
+    return purpose in CONFIDENTIAL_PURPOSES
+
+
+def is_publicly_servable(status, purpose) -> bool:
+    """Whether an asset may be handed to any caller.
+
+    Both conditions, and neither is sufficient: scanned clean AND not
+    confidential. A KYC document that passes a virus scan is still a KYC
+    document.
+    """
+    return is_servable(status) and not is_confidential(purpose)
+
+
+def allowed_content_types(purpose) -> Set[str]:
+    """The content types acceptable for one purpose."""
+    try:
+        purpose = AssetPurpose(purpose)
+    except ValueError:
+        return set()
+    if purpose is AssetPurpose.SELLER_DOCUMENT:
+        return ALLOWED_CONTENT_TYPES | DOCUMENT_CONTENT_TYPES
+    return set(ALLOWED_CONTENT_TYPES)
+
+
+def storage_key(purpose, owner_id: str, asset_id: str) -> str:
+    """Where an asset's bytes live in the object store.
+
+    Partitioned by purpose first so the bucket can carry a different policy per
+    prefix -- public read on products/, deny-all on documents/ and try-on/ --
+    without needing to know anything about individual objects. A flat namespace
+    would make that policy per-object, which is unmanageable at any scale.
+    """
+    try:
+        purpose = AssetPurpose(purpose)
+    except ValueError:
+        raise InvalidPurpose(f"unknown purpose {purpose!r}")
+
+    prefix = {
+        AssetPurpose.PRODUCT_IMAGE: "products",
+        AssetPurpose.SELLER_DOCUMENT: "documents",
+        AssetPurpose.TRY_ON_SOURCE: "try-on",
+        AssetPurpose.POST_MEDIA: "posts",
+    }[purpose]
+    return f"{prefix}/{owner_id}/{asset_id}"
+
+
+class InvalidPurpose(ValueError):
+    pass
+
+
+def plan_registration_for(purpose, filename: str, content_type: str,
+                          size_bytes: int) -> Decision:
+    """plan_registration, restricted to what this purpose accepts."""
+    try:
+        AssetPurpose(purpose)
+    except ValueError:
+        return Decision(Outcome.INVALID, None, None,
+                        f"unknown purpose {purpose!r}")
+
+    return plan_registration(filename, content_type, size_bytes,
+                             allowed=allowed_content_types(purpose))

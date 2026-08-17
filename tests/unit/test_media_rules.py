@@ -210,3 +210,135 @@ def test_no_route_to_servable_skips_a_clean_scan():
     assert reached_clean == [(MediaStatus.SCANNING, "verdict_clean")], (
         f"something other than a clean verdict during a scan reached CLEAN: "
         f"{reached_clean}")
+
+
+# ---------------------------------------------------------------------------
+# what an asset is for — the Media Center seam
+# ---------------------------------------------------------------------------
+
+AssetPurpose = media_rules.AssetPurpose
+is_confidential = media_rules.is_confidential
+is_publicly_servable = media_rules.is_publicly_servable
+allowed_content_types = media_rules.allowed_content_types
+storage_key = media_rules.storage_key
+plan_registration_for = media_rules.plan_registration_for
+
+
+def test_a_body_photo_is_confidential():
+    # The one worth stating outright. A try-on source is a photograph of a
+    # person's body, and it does not look like a secret in a database -- it is
+    # a JPEG, like a product image. Treating them alike because of that is the
+    # mistake this constant exists to prevent.
+    assert is_confidential(AssetPurpose.TRY_ON_SOURCE) is True
+
+
+def test_a_kyc_document_is_confidential():
+    assert is_confidential(AssetPurpose.SELLER_DOCUMENT) is True
+
+
+def test_listing_photos_and_posts_are_not():
+    assert is_confidential(AssetPurpose.PRODUCT_IMAGE) is False
+    assert is_confidential(AssetPurpose.POST_MEDIA) is False
+
+
+def test_an_unknown_purpose_is_confidential():
+    # A purpose this code does not recognise was added by someone who did not
+    # update these rules. The failure that matters is a new kind of upload
+    # being public by default.
+    for unknown in ("selfie", "", None, "TRY_ON_SOURCE", 7):
+        assert is_confidential(unknown) is True, f"{unknown!r} defaulted to public"
+
+
+def test_scanning_clean_does_not_make_a_document_public():
+    # Both conditions are required and neither is sufficient. A KYC document
+    # that passes a virus scan is still a KYC document.
+    clean = media_rules.MediaStatus.CLEAN
+    assert media_rules.is_servable(clean) is True
+    assert is_publicly_servable(clean, AssetPurpose.SELLER_DOCUMENT) is False
+    assert is_publicly_servable(clean, AssetPurpose.TRY_ON_SOURCE) is False
+
+
+def test_a_clean_product_image_is_public():
+    assert is_publicly_servable(media_rules.MediaStatus.CLEAN,
+                                AssetPurpose.PRODUCT_IMAGE) is True
+
+
+def test_an_unscanned_product_image_is_not_public():
+    for status in (media_rules.MediaStatus.QUARANTINED,
+                   media_rules.MediaStatus.SCANNING,
+                   media_rules.MediaStatus.INFECTED):
+        assert is_publicly_servable(status, AssetPurpose.PRODUCT_IMAGE) is False
+
+
+# ---------------------------------------------------------------------------
+# content types depend on what the asset is for
+# ---------------------------------------------------------------------------
+
+def test_only_documents_may_be_pdfs():
+    assert "application/pdf" in allowed_content_types(AssetPurpose.SELLER_DOCUMENT)
+    for purpose in (AssetPurpose.PRODUCT_IMAGE, AssetPurpose.TRY_ON_SOURCE,
+                    AssetPurpose.POST_MEDIA):
+        assert "application/pdf" not in allowed_content_types(purpose)
+
+
+def test_images_are_allowed_everywhere():
+    for purpose in AssetPurpose:
+        assert "image/jpeg" in allowed_content_types(purpose)
+
+
+def test_an_unknown_purpose_allows_nothing():
+    assert allowed_content_types("selfie") == set()
+
+
+def test_a_pdf_listing_photo_is_refused():
+    d = plan_registration_for(AssetPurpose.PRODUCT_IMAGE, "spec.pdf",
+                              "application/pdf", 1024)
+    assert d.outcome is media_rules.Outcome.INVALID
+
+
+def test_a_pdf_kyc_document_is_accepted():
+    d = plan_registration_for(AssetPurpose.SELLER_DOCUMENT, "licence.pdf",
+                              "application/pdf", 1024)
+    assert d.ok
+    assert d.new_status is media_rules.MediaStatus.QUARANTINED
+
+
+def test_registration_for_an_unknown_purpose_is_refused():
+    d = plan_registration_for("selfie", "x.png", "image/png", 10)
+    assert d.outcome is media_rules.Outcome.INVALID
+
+
+def test_purpose_does_not_bypass_the_other_checks():
+    # A document is still subject to the size limit and the filename rule.
+    assert not plan_registration_for(AssetPurpose.SELLER_DOCUMENT, "", "application/pdf", 10).ok
+    assert not plan_registration_for(AssetPurpose.SELLER_DOCUMENT, "a.pdf",
+                                     "application/pdf", media_rules.MAX_BYTES + 1).ok
+
+
+# ---------------------------------------------------------------------------
+# storage layout
+# ---------------------------------------------------------------------------
+
+def test_each_purpose_gets_its_own_prefix():
+    # Partitioned by purpose so the bucket can carry a different policy per
+    # prefix -- public read on products/, deny-all on documents/ and try-on/ --
+    # without knowing anything about individual objects.
+    keys = {p: storage_key(p, "owner-1", "asset-1") for p in AssetPurpose}
+    prefixes = {k.split("/")[0] for k in keys.values()}
+    assert len(prefixes) == len(AssetPurpose), f"prefixes collide: {keys}"
+
+
+def test_confidential_purposes_are_not_under_the_public_prefix():
+    public_prefix = storage_key(AssetPurpose.PRODUCT_IMAGE, "o", "a").split("/")[0]
+    for purpose in media_rules.CONFIDENTIAL_PURPOSES:
+        assert not storage_key(purpose, "o", "a").startswith(public_prefix + "/")
+
+
+def test_the_key_includes_owner_and_asset():
+    key = storage_key(AssetPurpose.TRY_ON_SOURCE, "user-9", "asset-3")
+    assert "user-9" in key and "asset-3" in key
+
+
+def test_an_unknown_purpose_has_no_key():
+    with pytest.raises(media_rules.InvalidPurpose):
+        storage_key("selfie", "o", "a")

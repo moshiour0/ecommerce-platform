@@ -111,6 +111,66 @@ Workers were previously absent from this section entirely — six components exi
 *   **notification-worker** (`:8034`): owns provider dispatch (Email/SMS/Push) and records outcomes back to `notification-service`. The service owns notification *state*; the worker owns *delivery*.
 *   **webhook-handler** (`:8035`): terminates external PSP webhooks and applies the 4-layer deduplication in §4. Owns no database of its own — it writes to the `payment-service` outbox.
 
+### 3c. Media Center (reserved, not built)
+
+Media Center — AI try-on and a social feed — is planned for later
+(MARKETPLACE_ROADMAP.md §3.6). Nothing here is implemented, and nothing emits
+these events. They are declared now so that building it later is additive
+rather than a migration.
+
+**Ports 8040–8049 are reserved** for Media Center services and must not be
+allocated to anything else. Not 8020–8029: Rule 2 gives `8001-8020` to the
+core services, so that range overlaps the last core slot -- exactly the
+collision Rule 2 exists to prevent. Workers hold `8030-8039`, so Media
+Center starts at 8040.
+
+**Bounded context.** Media Center gets its own database and its own services.
+Commerce may **never** call it synchronously: a product page that cannot render
+because a social feed is slow is a self-inflicted outage. Integration is by
+events in both directions, and neither side blocks on the other.
+
+**Asset purposes** (implemented, migration 013). Every media asset declares
+what it is for, because that decides who may read it:
+
+| Purpose | Confidential | Notes |
+|---|---|---|
+| `product_image` | no | public once scanned clean |
+| `post_media` | no | shared to the feed deliberately |
+| `seller_document` | **yes** | KYC, trade licence, bank details |
+| `try_on_source` | **yes** | a photograph of a person's body |
+
+`try_on_source` is confidential for a reason worth stating: it is the most
+sensitive content this platform will hold, and it is indistinguishable from a
+product photo by file type. Scanning it clean does not make it public. An
+unknown purpose is treated as confidential, so a new kind of upload cannot
+become public by being forgotten.
+
+**Event contracts.** Declared, not emitted. The first three exist today; the
+rest are the seam:
+
+```
+MediaRegistered      media_id, owner_id, purpose, content_type, filename   (emitted)
+MediaPublished       media_id, owner_id, purpose, status                   (emitted)
+MediaQuarantined     media_id, owner_id, purpose, status                   (emitted)
+
+TryOnRequested       request_id, user_id, source_media_id, product_id
+TryOnCompleted       request_id, source_media_id, result_media_id,
+                     product_id, fit_metadata
+TryOnFailed          request_id, source_media_id, reason
+
+PostCreated          post_id, user_id, media_ids[], product_ids[], caption
+PostEngaged          post_id, user_id, kind (like|comment|share)
+PostRemoved          post_id, moderator_id, reason
+```
+
+Try-on is an **asynchronous job pipeline**: upload, queue, GPU worker, result
+stored as a new media asset with purpose `post_media` or a new result purpose,
+user notified. It is a print job, not a request/response.
+
+The social feed is **fan-out on read** until there is a measured reason to do
+otherwise. Fan-out on write is an optimisation with a large operational cost,
+and building it before the feed has users is speculative.
+
 ## 4. Webhook Deduplication Strategy (4-Layers)
 External PSP webhooks must pass this exact sequence:
 1. HMAC-SHA256 Signature Verification.

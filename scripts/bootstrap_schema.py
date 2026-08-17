@@ -78,6 +78,7 @@ MIGRATIONS = [
     ("010_cart_db_cart_state_updated_at.sql", ["cart_db"]),
     ("011_inventory_db_reservations.sql", ["inventory_db"]),
     ("012_catalog_db_seller_id.sql", ["catalog_db"]),
+    ("013_media_db_asset_purpose.sql", ["media_meta_db"]),
 ]
 
 LEDGER_DDL = """

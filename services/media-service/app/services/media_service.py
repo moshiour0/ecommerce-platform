@@ -18,8 +18,9 @@ from sqlalchemy.future import select
 from ..models import IdempotencyKey, MediaAsset, OutboxMessage
 from ..schemas import MediaRegisterRequest, MediaResponse, ScanResultRequest
 from .media_rules import (
-    Decision, MediaStatus, Outcome, is_servable, plan_delete, plan_registration,
-    plan_scan_result, plan_scan_start,
+    Decision, MediaStatus, Outcome, is_confidential, is_publicly_servable,
+    is_servable, plan_delete, plan_registration_for, plan_scan_result,
+    plan_scan_start, storage_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,9 @@ def to_response(asset: MediaAsset) -> MediaResponse:
         content_type=asset.content_type,
         size_bytes=asset.size_bytes,
         status=asset.status,
+        purpose=asset.purpose,
         servable=is_servable(asset.status),
+        publicly_servable=is_publicly_servable(asset.status, asset.purpose),
         scan_detail=asset.scan_detail,
     )
 
@@ -64,6 +67,7 @@ def _emit(db: AsyncSession, asset: MediaAsset, event: str) -> None:
             "media_id": str(asset.id),
             "owner_id": str(asset.owner_id),
             "status": asset.status,
+            "purpose": asset.purpose,
             "content_type": asset.content_type,
             "filename": asset.filename,
         },
@@ -116,14 +120,17 @@ async def register_media(db: AsyncSession, request: MediaRegisterRequest,
         raise HTTPException(status_code=409,
                             detail="Duplicate request still in flight")
 
-    decision = plan_registration(request.filename, request.content_type,
-                                 request.size_bytes)
+    # The allowed content types depend on what the asset is for: a KYC
+    # document may be a PDF and a listing photo may not.
+    decision = plan_registration_for(request.purpose, request.filename,
+                                     request.content_type, request.size_bytes)
     if not decision.ok:
         await db.rollback()
         _reject(decision)
 
     asset = MediaAsset(
         owner_id=request.owner_id,
+        purpose=request.purpose,
         filename=request.filename,
         content_type=request.content_type,
         size_bytes=request.size_bytes,
@@ -133,6 +140,13 @@ async def register_media(db: AsyncSession, request: MediaRegisterRequest,
     )
     db.add(asset)
     await db.flush()  # assign the id before it goes into the event and the key
+
+    # Bytes go to a key derived from the purpose, so the bucket can carry a
+    # different policy per prefix rather than per object. A caller may supply
+    # its own key, but the default is the one the storage layout expects.
+    if not asset.storage_key:
+        asset.storage_key = storage_key(request.purpose, str(asset.owner_id),
+                                        str(asset.id))
 
     _emit(db, asset, decision.event)
     await db.execute(
@@ -180,6 +194,16 @@ async def get_location(db: AsyncSession, media_id: uuid.UUID):
     media is the same as serving it.
     """
     asset = await _load(db, media_id)
+
+    # Confidential first, and with a 404 rather than a 409. A KYC document or a
+    # body photo passing a virus scan does not make it public, and answering
+    # "this exists but you may not have it" tells an enumerating caller which
+    # ids are real.
+    if is_confidential(asset.purpose):
+        logger.warning("refused public location for %s asset %s",
+                       asset.purpose, media_id)
+        raise HTTPException(status_code=404, detail="Media not found")
+
     if not is_servable(asset.status):
         raise HTTPException(
             status_code=409,

@@ -5,7 +5,7 @@ from sqlalchemy import Column, String, Integer, DateTime
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 
 from .database import Base
-from .services.media_rules import MediaStatus
+from .services.media_rules import AssetPurpose, MediaStatus
 
 
 class MediaAsset(Base):
@@ -21,6 +21,12 @@ class MediaAsset(Base):
     # media_meta_db, not media_db -- so the key is opaque here.
     storage_key = Column(String(1024), nullable=True)
     checksum = Column(String(128), nullable=True)
+
+    # What the asset is for. Decides who may read it, which is why it is not
+    # nullable: an asset nobody has classified would have to be treated as
+    # confidential, and that is a worse default to discover at read time.
+    purpose = Column(String(32), nullable=False,
+                     default=AssetPurpose.PRODUCT_IMAGE.value, index=True)
 
     # Quarantined on arrival, and only a completed clean scan changes that.
     # The default lives here as well as in the rules so a row inserted by any
