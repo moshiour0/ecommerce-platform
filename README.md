@@ -42,8 +42,9 @@ is best read as working-but-unproven.
 
 ## Running it
 
-Requires Docker with about 8 GB available. The stack is 34 containers, five of
-them JVMs, so it does not comfortably share a machine with anything large.
+Requires Docker with about 8 GB available. The stack is 36 containers, seven of
+them JVMs (three Kafka brokers, ZooKeeper, Schema Registry, Debezium,
+Elasticsearch), so it does not comfortably share a machine with anything large.
 
 ```bash
 cp .env.example .env      # then set JWT_SECRET, PSP_WEBHOOK_SECRET, MINIO_ROOT_PASSWORD
@@ -51,11 +52,17 @@ docker compose -f docker-compose.yml -f docker-compose.apps.yml up -d
 python scripts/bootstrap_schema.py
 python scripts/bootstrap_storage.py
 python fix_connectors.py
+python scripts/kafka_replication.py
 ```
 
 `make init` does all of the above in the right order, waits included — if you
 have `make`. The ordering is not incidental: Debezium can only capture tables
 that already exist, so connectors must be registered after the schema.
+
+`kafka_replication.py` reports the replication factor of every topic and exits
+non-zero if any is below three. Adding brokers does not replicate topics that
+already exist — they keep the assignment they were created with — so `--fix`
+reassigns them. Run it after any change to the broker count.
 
 `bootstrap_storage.py` creates the media bucket and applies its access policy.
 The policy is not written by hand — it is generated from the purpose taxonomy
@@ -99,11 +106,11 @@ Three tiers, deliberately separated by what they need to run.
 
 | Tier | What it proves | Needs | Count |
 |---|---|---|---|
-| `tests/unit` | Decisions, against fake inputs and fake clocks | nothing | 498 |
+| `tests/unit` | Decisions, against fake inputs and fake clocks | nothing | 517 |
 | `services/api-gateway/test` | Rate limit tiering and exemptions | nothing | 24 |
 | `shared/libs/node-common/test` | Read-model field ownership, Node side | nothing | 18 |
 | `tests/integration` | Behaviour under real parallel load | running stack | 5 |
-| `tests/e2e` | The platform end to end | running stack | 8 |
+| `tests/e2e` | The platform end to end | running stack | 9 |
 
 ```bash
 python -m pytest tests/unit -q
@@ -141,9 +148,10 @@ Two workflows, in [.github/workflows](.github/workflows):
   two state-loss e2e tests, all four concurrency checks, and the object
   storage policy check. ~2m.
 
-`test_01` through `test_06` are not in CI. They drive the CQRS pipeline and the
-saga, so they need most of the platform, and a GitHub-hosted runner on a private
-repository is 2 cores and 8 GB. Run them by hand after touching those paths.
+`test_01` through `test_06` and `test_09` are not in CI. They drive the CQRS
+pipeline, the saga, and the Kafka layer, so they need most of the platform, and
+a GitHub-hosted runner on a private repository is 2 cores and 8 GB. Run them by
+hand after touching those paths.
 
 ## How a checkout flows
 

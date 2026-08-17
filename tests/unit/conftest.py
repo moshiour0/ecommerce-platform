@@ -124,3 +124,8 @@ connector_config = load_module(
     "connector_config_under_test",
     "fix_connectors.py",
 )
+
+kafka_replication = load_module(
+    "kafka_replication_under_test",
+    "shared/libs/python-common/kafka_replication.py",
+)

@@ -95,6 +95,20 @@ metadata:
     app: kafka
     tier: infra
 spec:
+  # DELIBERATELY ONE BROKER, and not the target architecture. Compose runs
+  # three with replication.factor=3 (see docker-compose.yml); this cluster
+  # shares an 8.2 GB VM with compose and cannot afford three more JVMs, so it
+  # stays single-broker and every topic here has exactly one copy.
+  #
+  # That means this cluster loses every event if the broker restarts. It is
+  # usable for wiring and manifest checks, not for anything about durability --
+  # tests/e2e/test_09_broker_loss.py deliberately targets compose by container
+  # name rather than pretending to be portable.
+  #
+  # Making this real needs a StatefulSet with three replicas, per-pod volumes,
+  # and a headless Service, plus the min.insync.replicas and
+  # unclean.leader.election settings compose now carries. Left undone rather
+  # than done untested.
   replicas: 1
   strategy:
     type: Recreate

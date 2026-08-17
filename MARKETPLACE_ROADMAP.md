@@ -415,8 +415,11 @@ Size for your actual traffic and one order of magnitude above, not for Amazon:
 - Postgres: managed, read replicas for reporting, **partition** orders and events
   by month before the tables reach ~50M rows. Shard only when a single primary
   genuinely cannot cope — it is a large step and most marketplaces never take it.
-- Kafka: replication factor **3**, minimum in-sync replicas 2. Your compose file
-  currently runs RF=1, which means one broker failure loses every event.
+- Kafka: replication factor **3**, minimum in-sync replicas 2. ✅ **Done** —
+  compose runs three brokers with `acks=all` and unclean leader election off,
+  and `tests/e2e/test_09_broker_loss.py` proves a broker can die without losing
+  an acknowledged write. In production this becomes a managed cluster across
+  three availability zones; the settings are the same.
 - Redis: cluster or sentinel. Today it is a single instance and a single point of
   failure for carts and rate limiting.
 - Elasticsearch: 3 data nodes minimum; index per month for behaviour data.
@@ -537,12 +540,16 @@ Concrete, small, and each one buys information or removes risk:
    `ARCHITECTURE_STATE_FINAL.md`. Half a day, and it determines a year of work.
 2. **Add the Media Center seam** from §3.6 — the `purpose` column, the event
    contracts in the architecture document, the reserved ports. One afternoon.
-3. **Set Kafka to RF=3 and give Redis a replica** in the compose file, so your
-   local environment stops teaching you habits that fail in production.
+3. ~~**Set Kafka to RF=3**~~ ✅ done. **Give Redis a replica** in the compose
+   file, so your local environment stops teaching you habits that fail in
+   production. Redis is still one instance and still a single point of failure
+   for carts and rate limiting.
 
 `seller_id` landed on 2026-08-16: every product has an owner, the event and
 the read model carry it, and search can be filtered to one seller. The Media
-Center seam is the one I would do next.
+Center seam, object storage, and Kafka RF=3 all landed on 2026-08-17. Redis
+replication is the last item on this list; after that the near-term work is
+D1–D3, which are decisions rather than code.
 
 ---
 

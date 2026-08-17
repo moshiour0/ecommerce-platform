@@ -387,6 +387,10 @@ services:
       - PYTHONPATH=/app:/app/shared_libs
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
       - ELASTICSEARCH_URL=http://elasticsearch:9200
+      # Was hardcoded to a single broker in main.py. Any one of the three is
+      # enough to discover the cluster; listing all three means a restart
+      # during a broker outage still finds one.
+      - KAFKA_BROKER=kafka:29092,kafka-2:29092,kafka-3:29092
     # Worker has no API ports to expose
     command: [ "python", "-m", "app.main" ]
 
@@ -465,7 +469,12 @@ services:
       - PYTHONPATH=/app:/app/shared_libs
       # The mesh listener. kafka:9092 is advertised as localhost:9092 and is
       # only usable from the host.
-      - KAFKA_BROKER=kafka:29092
+      #
+      # All three brokers, because a bootstrap list of one makes the client
+      # unable to start while that broker is down -- which is precisely the
+      # situation replication exists to survive. Any one of them is enough to
+      # learn the full cluster layout.
+      - KAFKA_BROKER=kafka:29092,kafka-2:29092,kafka-3:29092
       - REDIS_URL=redis://redis:6379
       # Escalations are written to the immutable audit log (§5).
       - AUDIT_URL=http://audit-service:8019/audit

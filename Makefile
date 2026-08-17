@@ -26,14 +26,16 @@ env:
 # for the schema bootstrap), then schema, then CDC connectors. Debezium can
 # only capture tables that already exist, so connectors must come last.
 init: env
-	$(COMPOSE) up -d postgres redis kafka zookeeper elasticsearch schema-registry
+	$(COMPOSE) up -d postgres redis minio zookeeper kafka kafka-2 kafka-3 elasticsearch schema-registry
 	@echo "Waiting for infrastructure..."
 	@sleep 20
 	$(COMPOSE) up -d
 	@echo "Waiting for services to register..."
 	@sleep 20
 	$(MAKE) bootstrap
+	$(MAKE) storage
 	$(MAKE) connectors
+	$(MAKE) replication
 	@echo ""
 	@echo "Platform up. Run 'make verify' to prove it works."
 
@@ -42,10 +44,19 @@ init: env
 bootstrap:
 	python scripts/bootstrap_schema.py
 
+# Media bucket and its access policy, generated from the purpose taxonomy.
+storage:
+	python scripts/bootstrap_storage.py
+
 # One Debezium connector per service database, each with a distinct
 # replication slot.
 connectors:
 	python fix_connectors.py
+
+# Topics created before the third broker existed keep one replica forever.
+# Reports first, then reassigns anything below RF=3.
+replication:
+	python scripts/kafka_replication.py --fix
 
 # ---------------------------------------------------------------------------
 # verification
@@ -56,7 +67,8 @@ verify:
 		for t in test_01_catalog_write_to_read_sync test_02_cqrs_distributed_updates \
 		         test_03_saga_orchestrator test_04_full_checkout_flow \
 		         test_05_auxiliary_services test_06_intra_mesh_connectivity \
-		         test_07_cart_cache_coherence test_08_rate_limit_state_loss; do \
+		         test_07_cart_cache_coherence test_08_rate_limit_state_loss \
+		         test_09_broker_loss; do \
 			if python $$t.py >/dev/null 2>&1; then \
 				echo "  PASS  $$t"; pass=$$((pass+1)); \
 			else \

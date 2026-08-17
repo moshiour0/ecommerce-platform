@@ -208,7 +208,16 @@ def consume_forever():
     # worker started. Kafka treats a leading ^ as a pattern.
     consumer.subscribe(["^dlq\\..*"])
 
-    producer = Producer({"bootstrap.servers": KAFKA_BROKER})
+    # Republishing is a move, not a copy: the message is committed out of the
+    # DLQ once this succeeds, so an unacknowledged write here loses it for
+    # good. acks=all with min.insync.replicas=2 means two brokers hold it
+    # before the commit; idempotence keeps a retry from delivering it twice to
+    # a consumer that is not idempotent about everything.
+    producer = Producer({
+        "bootstrap.servers": KAFKA_BROKER,
+        "acks": "all",
+        "enable.idempotence": True,
+    })
     rds = redis.Redis.from_url(REDIS_URL, decode_responses=True)
     audit_session = requests.Session()
 

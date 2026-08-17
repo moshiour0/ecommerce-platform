@@ -27,8 +27,21 @@ class KafkaAvroConsumer:
         self.consumer = Consumer(consumer_conf)
         self.consumer.subscribe(self.topics)
 
+        # The DLQ producer's durability is set explicitly rather than left to
+        # librdkafka's default, because this is the producer of last resort:
+        # a message reaches it only after normal processing already failed, so
+        # losing it loses the only remaining copy.
+        #
+        # acks=all means the leader waits for min.insync.replicas (2) before
+        # acknowledging, which is what makes RF=3 mean anything -- with acks=1
+        # a write acknowledged by a leader that dies before its followers copy
+        # it is simply gone. Idempotence stops a retried send from writing the
+        # message twice, which acks=all makes more likely, not less: a timeout
+        # after the write committed looks exactly like a failure.
         producer_conf = {
-            'bootstrap.servers': self.broker_url
+            'bootstrap.servers': self.broker_url,
+            'acks': 'all',
+            'enable.idempotence': True,
         }
         self.dlq_producer = Producer(producer_conf)
 

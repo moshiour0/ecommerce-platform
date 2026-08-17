@@ -8,20 +8,22 @@
 #
 # Why a slice rather than the whole platform
 # ------------------------------------------
-# The full stack is 34 containers, five of which are JVMs (Kafka, Zookeeper,
-# Schema Registry, Debezium, Elasticsearch). It needs roughly 8 GB, which is
-# why it cannot share a machine with the Kubernetes cluster. A GitHub-hosted
-# standard runner on a private repository is 2 cores and 8 GB, so the full
-# suite would be fighting the runner for memory before the first assertion.
+# The full stack is 36 containers, seven of which are JVMs (three Kafka
+# brokers, Zookeeper, Schema Registry, Debezium, Elasticsearch). It needs
+# roughly 8 GB, which is why it cannot share a machine with the Kubernetes
+# cluster. A GitHub-hosted standard runner on a private repository is 2 cores
+# and 8 GB, so the full suite would be fighting the runner for memory before
+# the first assertion.
 #
 # This slice is 7 containers and 5 images, and it covers the assertions most
 # worth having automated: the ones about concurrency and about what survives
 # losing Redis, which are exactly the bugs that do not reproduce on a
 # developer's machine.
 #
-# test_01 through test_06 stay manual. They exercise the CQRS pipeline
-# (Debezium -> Kafka -> Elasticsearch) and the saga, so there is no honest way
-# to trim them. See tests/e2e/README.md.
+# test_01 through test_06 stay manual, and so does test_09. The first six
+# exercise the CQRS pipeline (Debezium -> Kafka -> Elasticsearch) and the
+# saga; test_09 stops a Kafka broker, which needs all three of them here.
+# There is no honest way to trim any of it. See tests/e2e/README.md.
 
 name: Stack tests
 

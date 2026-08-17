@@ -207,6 +207,47 @@ External PSP webhooks must pass this exact sequence:
 4. Direct emission to the local outbox (No synchronous HTTP calls to internal services).
 
 ## 5. Event Mesh & Reliability Rules
+
+### 5.0 Broker replication (implemented)
+
+Three brokers, `replication.factor=3`, `min.insync.replicas=2`, `acks=all`.
+Each of those four is load-bearing and the set is not separable:
+
+| Setting | Where | What its absence costs |
+|---|---|---|
+| 3 brokers | `docker-compose.yml` | RF=3 is unsatisfiable below three; a partition may not put two replicas on one broker |
+| `default.replication.factor=3` | broker | topics created later silently return to one copy |
+| `min.insync.replicas=2` | broker | `acks=all` degenerates to `acks=1` when followers fall behind |
+| `acks=all` | every producer | a write acknowledged by a leader that dies before its followers copy it is gone |
+| `unclean.leader.election.enable=false` | broker | a replica that never received the data can be elected leader, dropping acknowledged writes with no error anywhere |
+
+Two brokers cannot express this: `min.insync.replicas=2` with RF=2 halts all
+writes the moment either broker goes down, trading durability for an outage.
+Three is the smallest count where one loss is survivable in both directions.
+
+**Raising the broker count replicates nothing.** A topic keeps the replica
+assignment it was created with, so every topic from the single-broker era stays
+at one copy until it is reassigned — while the cluster reports green and every
+produce succeeds. `scripts/kafka_replication.py` enumerates topics and reports
+the ones below target; `--fix` reassigns them. This is not optional cleanup:
+`__consumer_offsets` at RF=1 rewinds every consumer group to `earliest` on one
+broker loss, and `_schemas` at RF=1 makes every Avro consumer unable to
+deserialise anything.
+
+One useful consequence of the combination: with `min.insync.replicas=2`, an
+under-replicated topic **rejects writes** rather than accepting them
+unreplicated. A producer using `acks=all` against an RF=1 topic gets
+`NotEnoughReplicasException`. The failure is loud instead of silent, which is
+the right way round.
+
+`tests/e2e/test_09_broker_loss.py` stops a broker and asserts all of it:
+acknowledged writes survive, writes continue during the outage, and the ISR
+returns to three on its own afterwards.
+
+Kafka data lives in named volumes (`kafka1_data`/`kafka2_data`/`kafka3_data`).
+Before this there were none, so `compose down` discarded every event and every
+consumer offset — the same defect the Redis volume fixed one layer down.
+
 *   Every event type must be versioned through Confluent Schema Registry (Avro/Protobuf). **Schema Compatibility Mode:** All Kafka topics must use `FULL_TRANSITIVE` compatibility mode in the Schema Registry. This ensures that every schema version is both forward and backward compatible with all previous versions. Breaking changes require a new topic name (e.g., `Order.events.v2`), a parallel consumer, and a documented migration plan approved in this document before deployment.
 *   Poison messages must go to a DLQ (dlq.<topic>) with manual offset commits to unblock partitions. **DLQ Recovery Policy:** Every DLQ topic must have an automated alerting integration that fires within 5 minutes of a new message arriving. DLQ messages must be triaged within 1 business day. For automated recovery, a DLQ reprocessor job may re-submit messages to the original topic after a configurable backoff (default: 1 hour), up to 3 retries. Messages that fail all 3 retries must be escalated to the on-call engineer and written to the immutable audit log. The DLQ reprocessor must never auto-retry messages flagged as schema-incompatible (these require manual schema resolution).
 *   All external calls must have timeouts. All retry logic must use backoff and jitter.

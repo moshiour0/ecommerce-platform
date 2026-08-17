@@ -48,17 +48,25 @@ E2E_URL_CATALOG_SERVICE=http://catalog.internal:8080 python tests/e2e/run_suite.
 
 ## What runs in CI
 
-`test_07_cart_cache_coherence` runs on every push, in
-`.github/workflows/stack-tests.yml`, alongside the three concurrency checks in
-`tests/integration`. It boots a five-container slice — postgres, redis,
-cart-service, inventory-service, api-gateway — which is everything those tests
-touch.
+`test_07_cart_cache_coherence` and `test_08_rate_limit_state_loss` run on every
+push, in `.github/workflows/stack-tests.yml`, alongside the concurrency and
+storage checks in `tests/integration`. That workflow boots a seven-container
+slice — postgres, redis, minio, cart-service, inventory-service, api-gateway,
+audit-service — which is everything those tests touch.
 
-`test_01` through `test_06` are **manual**. They drive the CQRS pipeline
-(Debezium → Kafka → Elasticsearch) and the saga, so trimming them is not
-possible: they need most of the platform or they are testing nothing. The full
-stack is 30 containers including five JVMs and wants roughly 8 GB, while a
-GitHub-hosted standard runner on a private repository is 2 cores and 8 GB.
+`test_01` through `test_06` and `test_09` are **manual**. The first six drive
+the CQRS pipeline (Debezium → Kafka → Elasticsearch) and the saga, so trimming
+them is not possible: they need most of the platform or they are testing
+nothing. `test_09_broker_loss` needs the Kafka layer specifically — three
+brokers plus ZooKeeper — and stops one of them mid-run. The full stack is 36
+containers including seven JVMs and wants roughly 8 GB, while a GitHub-hosted
+standard runner on a private repository is 2 cores and 8 GB.
+
+`test_09` is also the one test that is deliberately **not** portable: it stops
+and starts brokers by container name, so it only runs against compose. The
+Kubernetes dev cluster runs a single broker on purpose (see
+`infrastructure/k8s/dev-infra/kafka.yaml`), which means there is nothing there
+for it to assert.
 
 Two ways to automate the rest, if it becomes worth it:
 

@@ -1,3 +1,4 @@
+import os
 import logging
 import sys
 import inspect
@@ -117,7 +118,12 @@ def main():
             raise
 
     consumer = KafkaAvroConsumer(
-        broker_url="kafka:29092",
+        # Every broker, not just the first. A consumer that bootstraps from one
+        # address cannot start while that broker is down, which would make a
+        # three-broker cluster no more available than a one-broker cluster for
+        # anything that restarts at the wrong moment.
+        broker_url=os.getenv("KAFKA_BROKER",
+                             "kafka:29092,kafka-2:29092,kafka-3:29092"),
         schema_registry_url="http://schema-registry:8081",
         group_id="stream_processor_cg",
         topics=topics

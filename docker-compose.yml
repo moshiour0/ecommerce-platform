@@ -1,3 +1,72 @@
+# ------------------------------------------------------------------
+# Kafka: three brokers, replication factor 3
+# ------------------------------------------------------------------
+# One broker meant every topic had exactly one copy of every partition, so
+# losing the broker lost the events -- and there was no volume either, so
+# `compose down` lost them too. Rule 5 asks for a durable event mesh; a
+# single unbacked broker is the same failure the Redis change fixed in
+# 3ff64d9, one layer up.
+#
+# Three is the smallest count where replication survives a loss. With
+# min.insync.replicas=2 and acks=all, a write is acknowledged only once two
+# brokers hold it, so one broker can die with no acknowledged write lost and
+# no producer blocked. Two brokers cannot express that: min.insync=2 with
+# RF=2 stops all writes the moment either one goes down, which trades
+# durability for an outage.
+#
+# The shared settings live in a YAML anchor rather than being repeated three
+# times, because a durability setting that is right on two brokers out of
+# three is not a durability setting.
+x-kafka-common: &kafka-common
+  image: confluentinc/cp-kafka:7.4.0
+  restart: unless-stopped
+  depends_on:
+    zookeeper:
+      condition: service_healthy
+  # Broker registration, not port availability: schema-registry fails with
+  # "Expected 1 brokers but found only 0" when the port is open but the
+  # broker has not yet registered.
+  healthcheck:
+    test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:29092 >/dev/null 2>&1 || exit 1"]
+    interval: 10s
+    timeout: 10s
+    retries: 30
+    start_period: 20s
+  networks:
+    - mesh
+
+x-kafka-env: &kafka-env
+  KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+  KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+  # Every topic created from here on gets three copies. This covers the
+  # topics nobody creates by hand: Debezium creates one per captured table,
+  # and auto-creation covers the DLQs.
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+  KAFKA_MIN_INSYNC_REPLICAS: 2
+
+  # The internal topics are not exempt. __consumer_offsets at RF=1 means one
+  # broker loss rewinds every consumer group to its auto.offset.reset, which
+  # for these consumers is `earliest` -- the whole event history reprocessed.
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+
+  # The setting that decides whether any of the above is real. Left at its
+  # default, a broker that was not in the ISR may be elected leader when the
+  # in-sync ones are gone, and everything it never received is silently
+  # dropped -- acknowledged writes, lost, with no error anywhere. Off means
+  # the partition stays unavailable until a broker that actually has the
+  # data comes back. Unavailable is recoverable; silently truncated is not.
+  KAFKA_UNCLEAN_LEADER_ELECTION_ENABLE: "false"
+
+  # The image defaults to a 1 GB heap per broker. Three of those on top of
+  # Elasticsearch, Debezium and Schema Registry does not fit the 7.7 GB this
+  # stack is given; 512 MB each measured comfortably under the load these
+  # tests produce. Raise it if you start pushing real volume through.
+  KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
+
 services:
   # ==========================================
   # FOUNDATION: DATABASES & MESH
@@ -138,43 +207,59 @@ services:
       - mesh
 
   kafka:
-    image: confluentinc/cp-kafka:7.4.0
-    restart: unless-stopped
-    depends_on:
-      zookeeper:
-        condition: service_healthy
+    <<: *kafka-common
     ports:
       - "9092:9092"
     environment:
+      <<: *kafka-env
       KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-    # Broker registration, not port availability: schema-registry fails with
-    # "Expected 1 brokers but found only 0" when the port is open but the
-    # broker has not yet registered.
-    healthcheck:
-      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:29092 >/dev/null 2>&1 || exit 1"]
-      interval: 10s
-      timeout: 10s
-      retries: 30
-      start_period: 20s
-    networks:
-      - mesh
+    volumes:
+      - kafka1_data:/var/lib/kafka/data
+
+  kafka-2:
+    <<: *kafka-common
+    ports:
+      - "9093:9093"
+    environment:
+      <<: *kafka-env
+      KAFKA_BROKER_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:29092,PLAINTEXT_HOST://localhost:9093
+    volumes:
+      - kafka2_data:/var/lib/kafka/data
+
+  kafka-3:
+    <<: *kafka-common
+    ports:
+      - "9094:9094"
+    environment:
+      <<: *kafka-env
+      KAFKA_BROKER_ID: 3
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:29092,PLAINTEXT_HOST://localhost:9094
+    volumes:
+      - kafka3_data:/var/lib/kafka/data
 
   schema-registry:
     image: confluentinc/cp-schema-registry:7.4.0
     restart: unless-stopped
+    # All three, not just the first: creating _schemas with RF=3 fails outright
+    # while fewer than three brokers have registered, and Schema Registry does
+    # not retry -- it exits.
     depends_on:
       kafka:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
         condition: service_healthy
     ports:
       - "8081:8081"
     environment:
-      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:29092
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:29092,kafka-2:29092,kafka-3:29092
       SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      # _schemas holds every Avro schema in the platform. At RF=1 one broker
+      # loss makes every Avro consumer unable to deserialise anything.
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: 3
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8081/subjects || exit 1"]
       interval: 10s
@@ -219,6 +304,10 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       schema-registry:
@@ -226,14 +315,17 @@ services:
     ports:
       - "8083:8083"
     environment:
-      CONNECT_BOOTSTRAP_SERVERS: kafka:29092
+      CONNECT_BOOTSTRAP_SERVERS: kafka:29092,kafka-2:29092,kafka-3:29092
       CONNECT_GROUP_ID: 1
       CONNECT_CONFIG_STORAGE_TOPIC: my_connect_configs
       CONNECT_OFFSET_STORAGE_TOPIC: my_connect_offsets
       CONNECT_STATUS_STORAGE_TOPIC: my_connect_statuses
-      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
-      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
-      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      # Connect's own state. my_connect_offsets is where each connector's
+      # position in the replication slot lives -- losing it replays or skips
+      # CDC depending on the connector's snapshot mode.
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 3
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 3
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 3
       CONNECT_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
       CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
       CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
@@ -261,3 +353,9 @@ volumes:
   postgres_data:
   redis_data:
   minio_data:
+  # One per broker. Without these the log directories lived in the container
+  # filesystem, so recreating a broker discarded its replicas -- and recreating
+  # all three discarded every event and every consumer offset the platform had.
+  kafka1_data:
+  kafka2_data:
+  kafka3_data:
