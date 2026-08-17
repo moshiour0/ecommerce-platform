@@ -46,15 +46,46 @@ Requires Docker with about 8 GB available. The stack is 34 containers, five of
 them JVMs, so it does not comfortably share a machine with anything large.
 
 ```bash
-cp .env.example .env      # then set JWT_SECRET and PSP_WEBHOOK_SECRET
+cp .env.example .env      # then set JWT_SECRET, PSP_WEBHOOK_SECRET, MINIO_ROOT_PASSWORD
 docker compose -f docker-compose.yml -f docker-compose.apps.yml up -d
 python scripts/bootstrap_schema.py
+python scripts/bootstrap_storage.py
 python fix_connectors.py
 ```
 
 `make init` does all of the above in the right order, waits included — if you
 have `make`. The ordering is not incidental: Debezium can only capture tables
 that already exist, so connectors must be registered after the schema.
+
+`bootstrap_storage.py` creates the media bucket and applies its access policy.
+The policy is not written by hand — it is generated from the purpose taxonomy
+in `media_rules.py`, so a new asset purpose cannot end up with a bucket that
+disagrees about whether the world may read it. `--verify` reports drift without
+changing anything.
+
+## Uploads
+
+Bytes never pass through a service. The client registers metadata, asks for a
+pre-signed URL, and PUTs the file straight to the object store:
+
+```
+POST /media                     -> id, status=quarantined
+POST /media/{id}/upload-url     -> a pre-signed PUT, valid 15 minutes
+PUT  <that url>                 -> the client uploads directly to storage
+POST /media/{id}/scan/result    -> status=clean
+GET  /media/{id}/location       -> the public URL, if the purpose allows one
+```
+
+Two properties are enforced rather than assumed, and both are tested:
+
+- **An upload URL is issued only while the asset is quarantined.** Re-issuing
+  one after a clean scan would let the bytes at that key be swapped for content
+  the scanner never saw, which is the one way to defeat quarantine from
+  outside.
+- **The key prefix decides who may read it.** `products/` and `posts/` are
+  anonymously readable; `documents/` (seller KYC) and `try-on/` (customer
+  photos) are not, at the bucket, not merely at the service. Passing a virus
+  scan makes an asset servable, not public.
 
 Verify it actually works:
 
@@ -68,10 +99,10 @@ Three tiers, deliberately separated by what they need to run.
 
 | Tier | What it proves | Needs | Count |
 |---|---|---|---|
-| `tests/unit` | Decisions, against fake inputs and fake clocks | nothing | 441 |
+| `tests/unit` | Decisions, against fake inputs and fake clocks | nothing | 498 |
 | `services/api-gateway/test` | Rate limit tiering and exemptions | nothing | 24 |
 | `shared/libs/node-common/test` | Read-model field ownership, Node side | nothing | 18 |
-| `tests/integration` | Behaviour under real parallel load | running stack | 4 |
+| `tests/integration` | Behaviour under real parallel load | running stack | 5 |
 | `tests/e2e` | The platform end to end | running stack | 8 |
 
 ```bash
@@ -105,9 +136,10 @@ Two workflows, in [.github/workflows](.github/workflows):
 
 - **CI** — all three dependency-free tiers (Python units, the gateway's, and the
   shared Node library's), on every push and pull request. ~15 seconds.
-- **Stack tests** — boots a six-container slice (postgres, redis, cart-service,
-  inventory-service, api-gateway, audit-service) and runs the two state-loss
-  e2e tests plus all four concurrency checks. ~1m40s.
+- **Stack tests** — boots a seven-container slice (postgres, redis, minio,
+  cart-service, inventory-service, api-gateway, audit-service) and runs the
+  two state-loss e2e tests, all four concurrency checks, and the object
+  storage policy check. ~2m.
 
 `test_01` through `test_06` are not in CI. They drive the CQRS pipeline and the
 saga, so they need most of the platform, and a GitHub-hosted runner on a private

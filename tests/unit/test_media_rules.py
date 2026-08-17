@@ -342,3 +342,80 @@ def test_the_key_includes_owner_and_asset():
 def test_an_unknown_purpose_has_no_key():
     with pytest.raises(media_rules.InvalidPurpose):
         storage_key("selfie", "o", "a")
+
+
+# ---------------------------------------------------------------------------
+# object storage policy
+# ---------------------------------------------------------------------------
+
+bucket_policy = media_rules.bucket_policy
+public_prefixes = media_rules.public_prefixes
+confidential_prefixes = media_rules.confidential_prefixes
+may_issue_upload_url = media_rules.may_issue_upload_url
+
+
+def test_no_confidential_prefix_is_publicly_readable():
+    # The assertion the whole generated-policy approach exists for. A
+    # hand-written policy and a purpose list are two statements of one rule, and
+    # they drift -- someone adds a purpose, forgets the bucket, and a body photo
+    # becomes world-readable.
+    resources = " ".join(bucket_policy("media")["Statement"][0]["Resource"])
+    for prefix in confidential_prefixes():
+        assert f"/{prefix}/" not in resources,             f"{prefix}/ is granted anonymous read"
+
+
+def test_every_public_prefix_is_readable():
+    resources = bucket_policy("media")["Statement"][0]["Resource"]
+    for prefix in public_prefixes():
+        assert f"arn:aws:s3:::media/{prefix}/*" in resources
+
+
+def test_the_two_prefix_sets_do_not_overlap():
+    assert not (public_prefixes() & confidential_prefixes())
+
+
+def test_every_purpose_lands_in_exactly_one_set():
+    assert len(public_prefixes() | confidential_prefixes()) == len(AssetPurpose)
+
+
+def test_the_policy_grants_read_and_nothing_else():
+    # Anonymous write at any prefix would let anyone put an object anywhere,
+    # which is what pre-signed uploads exist to avoid.
+    statement = bucket_policy("media")["Statement"][0]
+    assert statement["Action"] == ["s3:GetObject"]
+    assert statement["Effect"] == "Allow"
+
+
+def test_the_bucket_name_is_honoured():
+    resources = " ".join(bucket_policy("other-bucket")["Statement"][0]["Resource"])
+    assert "arn:aws:s3:::other-bucket/" in resources
+    assert "arn:aws:s3:::media/" not in resources
+
+
+# ---------------------------------------------------------------------------
+# upload windows
+# ---------------------------------------------------------------------------
+
+def test_upload_is_permitted_while_quarantined():
+    d = may_issue_upload_url(MediaStatus.QUARANTINED, AssetPurpose.PRODUCT_IMAGE)
+    assert d.ok
+
+
+def test_upload_is_refused_once_scanned():
+    # The one way to defeat quarantine from outside: get a clean verdict, then
+    # swap the bytes at the key for something the scanner never saw.
+    for status in (MediaStatus.CLEAN, MediaStatus.SCANNING,
+                   MediaStatus.INFECTED, MediaStatus.DELETED):
+        d = may_issue_upload_url(status, AssetPurpose.PRODUCT_IMAGE)
+        assert not d.ok, f"an upload URL was issued for a {status} asset"
+
+
+def test_confidential_purposes_may_still_be_uploaded():
+    # Confidentiality restricts reading, not writing. The owner has to be able
+    # to send the file in the first place.
+    for purpose in (AssetPurpose.SELLER_DOCUMENT, AssetPurpose.TRY_ON_SOURCE):
+        assert may_issue_upload_url(MediaStatus.QUARANTINED, purpose).ok
+
+
+def test_an_unknown_purpose_gets_no_upload_url():
+    assert not may_issue_upload_url(MediaStatus.QUARANTINED, "selfie").ok

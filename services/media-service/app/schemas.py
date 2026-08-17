@@ -44,3 +44,14 @@ class MediaResponse(BaseModel):
 class MediaLocationResponse(BaseModel):
     id: UUID
     storage_key: str
+    # Served straight from the object store: no service is in the path of
+    # the bytes.
+    url: str
+
+
+class UploadUrlResponse(BaseModel):
+    url: str
+    method: str
+    headers: dict
+    expires_in: int
+    storage_key: str

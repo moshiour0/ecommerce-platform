@@ -316,12 +316,14 @@ stage 2 for years.
 The goal is that Media Center can be built later **without touching commerce**.
 That requires four things now, and nothing else.
 
-**1. Object storage from day one.** `media-service` already owns metadata and
-lifecycle — this was deliberate and it is the right seam. Add S3-compatible
-storage (MinIO locally, S3 or equivalent in production) with pre-signed upload
-URLs so bytes never pass through your services. Every image the marketplace
-already needs — product photos, KYC documents — goes through the same path, so
-this is not speculative work.
+**1. Object storage from day one.** ✅ **Done.** `media-service` already owned
+metadata and lifecycle — that was the right seam. MinIO now runs in compose,
+`POST /media/{id}/upload-url` issues a pre-signed PUT so bytes never pass
+through a service, and the bucket policy is generated from the purpose taxonomy
+rather than written by hand. Every image the marketplace already needs —
+product photos, KYC documents — goes through that same path, which is why this
+was not speculative work. Swapping MinIO for S3 is three environment
+variables.
 
 **2. An asset purpose.** Add `purpose` to media assets now:
 

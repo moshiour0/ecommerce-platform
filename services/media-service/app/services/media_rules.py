@@ -285,3 +285,77 @@ def plan_registration_for(purpose, filename: str, content_type: str,
 
     return plan_registration(filename, content_type, size_bytes,
                              allowed=allowed_content_types(purpose))
+
+
+# ---------------------------------------------------------------------------
+# object storage layout and policy
+# ---------------------------------------------------------------------------
+
+DEFAULT_BUCKET = "media"
+
+
+def purpose_prefix(purpose) -> str:
+    """The key prefix one purpose stores under, without the trailing slash."""
+    return storage_key(purpose, "_", "_").split("/")[0]
+
+
+def public_prefixes() -> Set[str]:
+    """Prefixes that may be read without credentials."""
+    return {purpose_prefix(p) for p in AssetPurpose if not is_confidential(p)}
+
+
+def confidential_prefixes() -> Set[str]:
+    return {purpose_prefix(p) for p in AssetPurpose if is_confidential(p)}
+
+
+def bucket_policy(bucket: str = DEFAULT_BUCKET) -> dict:
+    """The S3 bucket policy, derived from the purpose taxonomy.
+
+    Generated rather than written by hand, and that is the whole point. A
+    hand-maintained policy and a purpose list are two statements of the same
+    rule, and they drift: someone adds a purpose, forgets the bucket, and either
+    a public asset 403s or -- far worse -- a confidential prefix inherits a
+    permissive rule nobody re-read.
+
+    Anonymous read is granted per prefix and to nothing else. There is no
+    anonymous write at any prefix: uploads go through pre-signed URLs issued by
+    this service, which is what keeps bytes off the service hosts without
+    letting anyone put objects wherever they like.
+    """
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "PublicReadByPurpose",
+                "Effect": "Allow",
+                "Principal": {"AWS": ["*"]},
+                "Action": ["s3:GetObject"],
+                "Resource": [
+                    f"arn:aws:s3:::{bucket}/{prefix}/*"
+                    for prefix in sorted(public_prefixes())
+                ],
+            }
+        ],
+    }
+
+
+def may_issue_upload_url(status, purpose) -> Decision:
+    """Whether an asset may still be uploaded to.
+
+    Only while quarantined. An asset that has been scanned has had its bytes
+    read already, so re-issuing an upload URL would let the content be swapped
+    for something the scanner never saw -- a clean verdict on one file and a
+    different file at the key. That is the one way to defeat quarantine from
+    outside, so it is refused rather than merely discouraged.
+    """
+    try:
+        AssetPurpose(purpose)
+    except ValueError:
+        return Decision(Outcome.INVALID, None, None, f"unknown purpose {purpose!r}")
+
+    if status == MediaStatus.QUARANTINED or status == MediaStatus.QUARANTINED.value:
+        return Decision(Outcome.OK, None, None, "upload permitted")
+
+    return Decision(
+        Outcome.NOT_ALLOWED, None, None,
+        f"upload is only permitted while quarantined (status is {status})")

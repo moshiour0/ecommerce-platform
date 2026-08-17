@@ -11,3 +11,4 @@ opentelemetry-instrumentation-fastapi==0.40b0
 python-json-logger==2.0.7
 opentelemetry-sdk==1.19.0
 opentelemetry-exporter-otlp-proto-http==1.19.0
+boto3==1.34.34

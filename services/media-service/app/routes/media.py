@@ -5,11 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
 from ..schemas import (
-    MediaLocationResponse, MediaRegisterRequest, MediaResponse, ScanResultRequest,
+    MediaLocationResponse, MediaRegisterRequest, MediaResponse,
+    ScanResultRequest, UploadUrlResponse,
 )
 from ..services.media_service import (
-    delete_media, get_location, get_media, record_scan_result, register_media,
-    start_scan,
+    delete_media, get_location, get_media, get_upload_url,
+    record_scan_result, register_media, start_scan,
 )
 
 router = APIRouter(prefix="/media", tags=["media"])
@@ -55,3 +56,11 @@ async def scan_result_endpoint(
 @router.delete("/{media_id}", response_model=MediaResponse)
 async def delete_endpoint(media_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     return await delete_media(db, media_id)
+
+
+# The client PUTs the file to this URL directly. Bytes never pass through this
+# service, so its memory profile does not depend on what people upload.
+@router.post("/{media_id}/upload-url", response_model=UploadUrlResponse)
+async def upload_url_endpoint(media_id: uuid.UUID,
+                              db: AsyncSession = Depends(get_db)):
+    return await get_upload_url(db, media_id)

@@ -17,10 +17,11 @@ from sqlalchemy.future import select
 
 from ..models import IdempotencyKey, MediaAsset, OutboxMessage
 from ..schemas import MediaRegisterRequest, MediaResponse, ScanResultRequest
+from ..storage import presigned_upload_url, public_url
 from .media_rules import (
     Decision, MediaStatus, Outcome, is_confidential, is_publicly_servable,
-    is_servable, plan_delete, plan_registration_for, plan_scan_result,
-    plan_scan_start, storage_key,
+    is_servable, may_issue_upload_url, plan_delete, plan_registration_for,
+    plan_scan_result, plan_scan_start, storage_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -210,4 +211,30 @@ async def get_location(db: AsyncSession, media_id: uuid.UUID):
             detail=f"media is not servable (status {asset.status})")
     if not asset.storage_key:
         raise HTTPException(status_code=404, detail="no storage key recorded")
-    return {"id": asset.id, "storage_key": asset.storage_key}
+    return {"id": asset.id, "storage_key": asset.storage_key,
+            "url": public_url(asset.storage_key)}
+
+
+async def get_upload_url(db: AsyncSession, media_id: uuid.UUID) -> dict:
+    """A pre-signed URL the owner PUTs the file to.
+
+    Bytes go straight from the client to the object store; this service only
+    ever sees metadata. Issued once, while the asset is quarantined -- see
+    may_issue_upload_url for why re-issuing after a scan would defeat
+    quarantine entirely.
+    """
+    asset = await _load(db, media_id)
+
+    decision = may_issue_upload_url(asset.status, asset.purpose)
+    if not decision.ok:
+        _reject(decision)
+
+    if not asset.storage_key:
+        # Registered before storage keys existed, or with one supplied and then
+        # cleared. Derive it now rather than refusing.
+        asset.storage_key = storage_key(asset.purpose, str(asset.owner_id),
+                                        str(asset.id))
+        await db.commit()
+
+    logger.info("issued upload url for %s asset %s", asset.purpose, media_id)
+    return presigned_upload_url(asset.storage_key, asset.content_type)

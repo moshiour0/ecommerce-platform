@@ -4,7 +4,7 @@
 # e2e tests about state loss (cart cache, rate limiter) and the four
 # concurrency checks. They boot a deliberately small slice of the platform --
 # postgres, redis, cart-service, inventory-service, api-gateway, audit-service
-# -- which is everything those six tests touch and nothing else.
+# plus minio -- which is everything those tests touch and nothing else.
 #
 # Why a slice rather than the whole platform
 # ------------------------------------------
@@ -14,7 +14,7 @@
 # standard runner on a private repository is 2 cores and 8 GB, so the full
 # suite would be fighting the runner for memory before the first assertion.
 #
-# This slice is 6 containers and 4 images, and it covers the assertions most
+# This slice is 7 containers and 5 images, and it covers the assertions most
 # worth having automated: the ones about concurrency and about what survives
 # losing Redis, which are exactly the bugs that do not reproduce on a
 # developer's machine.
@@ -68,8 +68,10 @@ jobs:
           cp .env.example .env
           SECRET=$(openssl rand -hex 32)
           sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$SECRET|" .env
+          MINIO_SECRET=$(openssl rand -hex 16)
+          sed -i "s|^MINIO_ROOT_PASSWORD=.*|MINIO_ROOT_PASSWORD=$MINIO_SECRET|" .env
           echo "POSTGRES_USER=$(grep '^POSTGRES_USER=' .env | cut -d= -f2)"
-          echo "JWT_SECRET set to a generated value"
+          echo "JWT_SECRET and MINIO_ROOT_PASSWORD set to generated values"
 
       # docker-compose.apps.yml overrides the mesh network to external:true with
       # an explicit name, so the merged config expects it to already exist and
@@ -86,11 +88,16 @@ jobs:
         run: |
           docker network inspect "$MESH" >/dev/null 2>&1 || docker network create "$MESH"
 
+      # minio joins the slice for one assertion: that the bucket refuses
+      # anonymous reads of confidential prefixes. It is a single small Go
+      # binary, so it costs the runner far less than the check is worth -- the
+      # failure it guards against is silent, and the thing it exposes is
+      # seller KYC documents.
       - name: Build and start the slice
         run: |
           docker compose -f docker-compose.yml -f docker-compose.apps.yml \
             up -d --build --wait \
-            postgres redis cart-service inventory-service api-gateway audit-service
+            postgres redis minio cart-service inventory-service api-gateway audit-service
 
       # --wait returns when containers are healthy or running, but a running
       # uvicorn is not necessarily a listening one. Poll the ports the tests
@@ -118,6 +125,27 @@ jobs:
       # absent, which is what makes it usable against a slice.
       - name: Bootstrap the schema
         run: python scripts/bootstrap_schema.py
+
+      # Creates the bucket and applies the policy generated from the purpose
+      # taxonomy in media_rules. Run before the check below, which then asks
+      # the bucket whether it actually enforces it.
+      - name: Bootstrap object storage
+        run: |
+          pip install 'boto3==1.34.34'
+          set -a; . ./.env; set +a
+          S3_ACCESS_KEY="$MINIO_ROOT_USER" S3_SECRET_KEY="$MINIO_ROOT_PASSWORD" \
+            python scripts/bootstrap_storage.py
+
+      # A bucket with no policy passes the public-prefix half of this and fails
+      # the confidential half, which is the failure mode worth catching: it
+      # looks completely healthy from the storefront.
+      - name: Object storage honours the purpose taxonomy
+        run: |
+          set -a; . ./.env; set +a
+          docker run --rm -i --network "$MESH" \
+            -e S3_ACCESS_KEY="$MINIO_ROOT_USER" \
+            -e S3_SECRET_KEY="$MINIO_ROOT_PASSWORD" \
+            curlimages/curl:8.5.0 sh -s < tests/integration/storage_policy.sh
 
       - name: Install e2e test dependencies
         run: pip install -r tests/e2e/requirements.txt

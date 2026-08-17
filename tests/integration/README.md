@@ -1,15 +1,17 @@
 # Integration checks
 
-Three concurrency checks that need the stack up. Each one asserts a property
-that unit tests cannot reach: unit tests pin a decision against fake inputs,
-these prove the decision survives real parallel traffic through real Redis and
-real Postgres.
+Five checks that need the stack up. Each one asserts a property that unit
+tests cannot reach: unit tests pin a decision against fake inputs, these prove
+the decision survives real parallel traffic through real Redis, real Postgres,
+and a real object store.
 
 | Script | Asserts |
 |---|---|
 | `checkout_mutex.sh` | Exactly one of N parallel checkouts on one cart is accepted |
 | `inventory_contention.sh` | Exactly STOCK of N parallel buyers are served — no oversell |
 | `rate_limit_burst.sh` | The gateway caps a burst at its budget, and `/health` survives an exhausted budget |
+| `audit_chain_concurrency.sh` | Concurrent appends do not fork the audit hash chain |
+| `storage_policy.sh` | The bucket serves `products/` anonymously and refuses `documents/` |
 
 They run inside the mesh in a `curlimages/curl` container, because no service
 image ships curl.
@@ -42,7 +44,20 @@ nothing but docker.
 
 ## Seeding
 
-`checkout_mutex.sh` and `rate_limit_burst.sh` seed themselves.
+`checkout_mutex.sh`, `rate_limit_burst.sh` and `audit_chain_concurrency.sh`
+seed themselves.
+
+`storage_policy.sh` seeds itself too, but needs credentials — it writes one
+object under each kind of prefix before asking for them anonymously, because
+"403 on a key that holds nothing" would pass for the wrong reason:
+
+```bash
+docker run --rm -i --network ecommerce-platform_mesh -e S3_ACCESS_KEY=... -e S3_SECRET_KEY=... curlimages/curl:8.5.0 sh -s < tests/integration/storage_policy.sh
+```
+
+Run `python scripts/bootstrap_storage.py` first; against a bucket with no
+policy at all this check fails on the public half, which is the correct answer
+and not a flake.
 
 `inventory_contention.sh` deliberately does not: it reserves against a product
 row the caller created, so it never invents stock of its own. Against compose:
