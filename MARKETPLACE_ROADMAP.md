@@ -189,7 +189,7 @@ contracts and the storage model now, build nothing else.**
 
 | Service | Responsibility |
 |---|---|
-| `seller-service` | Onboarding, KYC documents, contracts, shop profile, seller status |
+| `seller-service` | ✅ **Built** — onboarding state machine, KYC document references, versioned contracts, shop profile, seller status |
 | `settlement-service` | The double-entry ledger, commission, payouts, reconciliation |
 | `review-service` | Product and seller reviews, ratings, moderation, verified-purchase proof |
 | `geo-service` | Places index, geocoding, address normalisation, serviceability |
@@ -553,8 +553,14 @@ the read model carry it, and search can be filtered to one seller. The Media
 Center seam, object storage and Kafka RF=3 landed on 2026-08-17, and Redis
 failover on 2026-08-21. That closes the near-term infrastructure list.
 
-D1-D3 are answered (§8). The next work is product, not plumbing: seller
-onboarding and the COD order path.
+D1-D3 are answered (§8). Seller onboarding landed on 2026-08-21:
+`seller-service` on port 8020 with the state machine from §3.1, KYC documents
+held as references to confidential media assets, and versioned contracts.
+
+Two things it deliberately does not do yet, both named in
+ARCHITECTURE_STATE_FINAL.md §4b: catalog-service does not yet refuse listings
+from sellers who may not sell, and there is no `bff-seller`. The COD order
+path is the other half of the near-term product work.
 
 ---
 

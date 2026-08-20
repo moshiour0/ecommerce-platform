@@ -31,6 +31,9 @@ TESTS = [
     "test_06_intra_mesh_connectivity",
     "test_07_cart_cache_coherence",
     "test_08_rate_limit_state_loss",
+    # Before the two that stop infrastructure: it needs seller-service and
+    # media-service answering, and nothing it does disturbs either.
+    "test_11_seller_onboarding",
     # Last on purpose: these two stop infrastructure. Both put it back and
     # wait for recovery before finishing, but running either earlier would
     # have every test after it sharing a cluster mid-repair.

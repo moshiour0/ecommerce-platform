@@ -21,7 +21,7 @@ Role Directive: You are "Anti-Gravity", a Principal Distributed Systems Architec
 
 ## 2. Authoritative Architectural Rules
 1.  Strict Data Isolation: No microservice may share a database. Services default to PostgreSQL, but may use specialized datastores where semantically appropriate (e.g., Redis exclusively for Cart, Elasticsearch for Search). No cross-database queries are permitted.
-2.  Strict Network Isolation: Every backend service must have a strictly unique local port mapping to prevent collisions. **Allocated ranges:** `8000` ingress gateway; `8001-8020` the twenty core services; `8030-8039` workers (health and metrics endpoints only — workers expose no business API). The previous single range of `8001-8020` was exactly twenty slots for twenty services with the gateway already occupying `8000`, leaving no allocation for any worker. Workers are first-class deployable units and must be addressable for liveness probes.
+2.  Strict Network Isolation: Every backend service must have a strictly unique local port mapping to prevent collisions. **Allocated ranges:** `8000` ingress gateway; `8001-8020` the twenty core services; `8030-8039` workers **`8001-8020` is now full** — seller-service took `8020` on 2026-08-21. The next core service needs this rule amended, and the free extension is `8021-8029`, since `8030-8039` is workers and `8040-8049` is reserved for Media Center. (health and metrics endpoints only — workers expose no business API). The previous single range of `8001-8020` was exactly twenty slots for twenty services with the gateway already occupying `8000`, leaving no allocation for any worker. Workers are first-class deployable units and must be addressable for liveness probes.
 3.  Outbox Before Kafka: Application code must never publish business events directly to Kafka. Business state and OutboxMessage records are written in the same atomic PostgreSQL transaction. CDC (Debezium) publishes those events to Kafka.
 4.  Idempotency is Mandatory: All state-mutating APIs require a UUIDv4 Idempotency-Key. Consumers must execute INSERT INTO processed_events ... ON CONFLICT DO NOTHING in the exact same transaction as their business logic. **Idempotency Response Contract:** On idempotency conflict (i.e., the key has been seen before), the service MUST return the previously committed result with its original HTTP status code — never an error. The idempotency guard is a cache, not a gate. Returning HTTP 409 on a legitimate retry is a protocol violation.
 
@@ -207,6 +207,72 @@ External PSP webhooks must pass this exact sequence:
 4. Direct emission to the local outbox (No synchronous HTTP calls to internal services).
 
 ## 5. Event Mesh & Reliability Rules
+
+### 4b. Seller onboarding (implemented)
+
+`seller-service` on port 8020, owning `seller_db`. migrations/012 gave every
+product a `seller_id` and said plainly that the id pointed at a service that
+did not exist yet. This is that service.
+
+**One state, not a set of booleans.** `is_verified` / `is_active` /
+`is_banned` produces combinations nobody designed — verified and banned,
+active but unverified — so onboarding is a single status with an explicit
+transition table:
+
+```
+registered → documents_submitted → under_review → approved → active
+                    ↑                    │                      ↕
+                    └──── rejected ──────┘                  suspended
+
+                    banned  (terminal, reachable from anywhere)
+```
+
+**The invariant:** `may_list_products` is a whitelist of exactly one status
+plus one condition — ACTIVE, and the accepted contract version equal to the
+current one. Every unrecognised status answers False, so a row written by a
+migration or a future version cannot become permission by accident. This is
+the same shape as `media_rules.is_servable`, for the same reason.
+
+| Distinction | Why it exists |
+|---|---|
+| APPROVED vs ACTIVE | KYC passing is not agreement to commission terms. Keeping them apart makes "terms changed" a version bump rather than a re-run of KYC |
+| REJECTED vs BANNED | Most rejections are a badly-lit photograph; making that terminal is a support ticket each time. A decision not to want this seller at all is a different decision |
+| suspend vs ban | Suspension is reversible and returns to ACTIVE without a second review |
+
+**What this service does not hold.** Nothing from inside a KYC document — no
+national ID number, no licence number, no bank account number. Documents are
+opaque `media_id` references to assets registered with media-service under
+`purpose=seller_document`, which is confidential: media-service refuses to
+serve a location for one even after a clean virus scan, and the bucket policy
+denies anonymous reads of the `documents/` prefix (§3c). The account number
+used to actually move money belongs wherever payouts execute, encrypted at
+rest — copying it here because onboarding collects it is how the most
+sensitive data the platform holds ends up in the least protected place.
+
+**Events.** Every transition emits exactly one outbox row, carrying the new
+status and a denormalised `may_list_products`. That flag is denormalised on
+purpose: a consumer deciding whether to accept a listing should not re-derive
+the rule, because re-deriving is how two services end up disagreeing about who
+may sell.
+
+```
+SellerRegistered  SellerDocumentsSubmitted  SellerReviewStarted
+SellerApproved    SellerRejected            SellerActivated
+SellerSuspended   SellerReinstated          SellerBanned
+```
+
+**Not yet done, and named so it is not mistaken for done:** catalog-service
+does not consult any of this. A suspended seller's existing listings stay up
+and a new listing is still accepted, because product creation never asks. The
+seam is `GET /sellers/{id}/permission`, deliberately narrow. Two ways to close
+it, and the choice is real: a synchronous call behind a circuit breaker
+(simple, couples catalog's availability to this service) or a local projection
+in catalog fed by the events above (eventually consistent, so a just-suspended
+seller can list for a second or two). The projection is the usual marketplace
+answer.
+
+`bff-seller` — the seller dashboard of orders, inventory, payouts and metrics
+— is also not built. Sellers must not reach internal services directly.
 
 ### 5.0 Redis availability (implemented)
 

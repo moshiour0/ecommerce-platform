@@ -30,7 +30,7 @@ import uuid
 import asyncpg
 import httpx
 
-from config import service_url, db_url, describe, mesh_exec_prefix
+from config import db_url, describe, mesh_exec_prefix, redis_primary_service, service_url
 
 CART_URL = service_url("cart-service") + "/cart"
 CART_DB_URL = db_url("cart_db")
@@ -48,7 +48,7 @@ def check(condition, ok_message, fail_message):
 
 def redis_cli(*args):
     """Run redis-cli inside the mesh. docker exec or kubectl exec, per target."""
-    cmd = mesh_exec_prefix("redis") + ["redis-cli", *args]
+    cmd = mesh_exec_prefix(redis_primary_service()) + ["redis-cli", *args]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
     if result.returncode != 0:
         print(f"      [!] redis-cli {' '.join(args)} failed: {result.stderr.strip()}")

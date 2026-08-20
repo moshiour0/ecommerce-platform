@@ -70,6 +70,8 @@ SERVICE_PORTS = {
     "notification-service": 8017,
     "media-service": 8018,
     "audit-service": 8019,
+    # The last slot in Rule 2's 8001-8020 core range.
+    "seller-service": 8020,
     "saga-dispatcher": 8030,
 }
 
@@ -158,3 +160,54 @@ def mesh_exec_prefix(via: str = "api-gateway") -> list:
     if TARGET == "cluster" or TARGET == "forward":
         return ["kubectl", "-n", NAMESPACE, "exec", f"deploy/{via}", "--"]
     return ["docker", "exec", f"ecommerce-platform-{via}-1"]
+
+
+# Compose runs a Redis primary, a replica and three sentinels. Which container
+# is the primary is not fixed: sentinel does not fail back, so after
+# test_10_redis_failover the node named `redis` is the replica and stays that
+# way.
+_REDIS_NODES = ("redis", "redis-replica")
+_REDIS_SENTINELS = ("redis-sentinel-1", "redis-sentinel-2", "redis-sentinel-3")
+
+
+def redis_primary_service(default: str = "redis") -> str:
+    """The compose service name of the current Redis primary.
+
+    Asked rather than assumed. A test that writes to `redis` by name gets
+    "READONLY You can't write against a read only replica" once a failover has
+    happened -- which is not a bug in the thing under test, but it fails the
+    run and it does so only sometimes, depending on what ran before it.
+
+    Falls back to `default` when there are no sentinels to ask: the Kubernetes
+    dev cluster runs a single Redis on purpose (see
+    infrastructure/k8s/dev-infra/infrastructure.yaml), and so does any
+    deployment that leaves REDIS_SENTINELS empty.
+    """
+    if TARGET != "compose":
+        return default
+
+    import subprocess
+
+    address = ""
+    for sentinel in _REDIS_SENTINELS:
+        result = subprocess.run(
+            ["docker", "exec", f"ecommerce-platform-{sentinel}-1",
+             "redis-cli", "-p", "26379", "sentinel",
+             "get-master-addr-by-name", "mymaster"],
+            capture_output=True, text=True, timeout=20)
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if lines:
+            address = lines[0]
+            break
+    if not address:
+        return default
+
+    for node in _REDIS_NODES:
+        result = subprocess.run(
+            ["docker", "inspect", "-f",
+             "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+             f"ecommerce-platform-{node}-1"],
+            capture_output=True, text=True, timeout=20)
+        if result.stdout.strip() and result.stdout.strip() == address:
+            return node
+    return default

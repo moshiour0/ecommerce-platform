@@ -58,6 +58,7 @@ SERVICES = {
     "fulfillment-service":    "fulfillment_db",
     "notification-service":   "notification_db",
     "media-service":          "media_meta_db",
+    "seller-service":         "seller_db",
     "audit-service":          "audit_db",
 }
 
@@ -79,6 +80,7 @@ MIGRATIONS = [
     ("011_inventory_db_reservations.sql", ["inventory_db"]),
     ("012_catalog_db_seller_id.sql", ["catalog_db"]),
     ("013_media_db_asset_purpose.sql", ["media_meta_db"]),
+    ("014_seller_db_onboarding.sql", ["seller_db"]),
 ]
 
 LEDGER_DDL = """
@@ -110,6 +112,41 @@ def psql(db, sql=None, file=None):
     if file:
         return run(cmd + ["-f", "-"], input=Path(file).read_text(encoding="utf-8"))
     return run(cmd + ["-c", sql])
+
+
+def phase_databases():
+    """Create any service database that does not exist yet.
+
+    init-dbs.sh only runs on a *fresh* Postgres volume. Adding a database to
+    it therefore does nothing on any machine that already has data -- which is
+    every machine the platform has ever run on. Adding seller_db hit exactly
+    that: the file was right, the database was absent, and the service could
+    not connect.
+
+    The alternative was a line in the README telling people to run CREATE
+    DATABASE by hand, which is a step that gets skipped and an error that
+    reads like a bug in the service. Creating them here means the file and the
+    server agree after one command, on a fresh volume and an old one alike.
+
+    CREATE DATABASE cannot run inside a transaction block, so this shells out
+    per database rather than batching.
+    """
+    print("PHASE 0 — service databases")
+    existing = run(PSQL + ["-d", "postgres", "-tAc",
+                           "SELECT datname FROM pg_database"])
+    present = {line.strip() for line in existing.stdout.splitlines() if line.strip()}
+
+    for service, db in sorted(SERVICES.items(), key=lambda kv: kv[1]):
+        if db in present:
+            continue
+        res = run(PSQL + ["-d", "postgres", "-c", f'CREATE DATABASE {db}'])
+        if res.returncode == 0:
+            print(f"  CREATED {db}  (for {service})")
+        else:
+            err = (res.stderr or res.stdout).strip().splitlines()[-1:] or ["unknown"]
+            print(f"  FAIL    {db}: {err[0][:120]}")
+            failures.append(f"create database {db}")
+    print()
 
 
 def phase_models():
@@ -245,6 +282,7 @@ if __name__ == "__main__":
     print(" SCHEMA BOOTSTRAP")
     print("=" * 62 + "\n")
     wait_for_postgres()
+    phase_databases()
     live_dbs = phase_models()
     phase_migrations(live_dbs)
     verify(live_dbs)

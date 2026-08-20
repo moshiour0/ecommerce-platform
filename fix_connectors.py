@@ -42,6 +42,7 @@ DATABASES = {
     "promo_db":          "promotion",
     "audit_db":          "audit",
     "media_meta_db":     "media",
+    "seller_db":         "seller",
 }
 
 def build_config(db: str, service_name: str,

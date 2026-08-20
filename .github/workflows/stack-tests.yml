@@ -1,23 +1,24 @@
 # Stack tests
 #
 # The tests that need running infrastructure rather than pure functions:
-# three e2e tests about state loss and failover (cart cache, rate limiter,
-# Redis primary) plus the concurrency and storage checks. They boot a
+# four e2e tests about state loss, failover and seller onboarding, plus the
+# concurrency and storage checks. They boot a
 # deliberately small slice of the platform --
 # postgres, the Redis primary/replica/sentinel set, cart-service,
-# inventory-service, api-gateway, audit-service and minio -- which is
-# everything those tests touch and nothing else.
+# inventory-service, api-gateway, audit-service, seller-service,
+# media-service and minio -- which is everything those tests touch and
+# nothing else.
 #
 # Why a slice rather than the whole platform
 # ------------------------------------------
-# The full stack is 41 containers, seven of which are JVMs (three Kafka
+# The full stack is 42 containers, seven of which are JVMs (three Kafka
 # brokers, Zookeeper, Schema Registry, Debezium, Elasticsearch). It needs
 # roughly 8 GB, which is why it cannot share a machine with the Kubernetes
 # cluster. A GitHub-hosted standard runner on a private repository is 2 cores
 # and 8 GB, so the full suite would be fighting the runner for memory before
 # the first assertion.
 #
-# This slice is 11 containers and 5 images, and it covers the assertions most
+# This slice is 13 containers and 5 images, and it covers the assertions most
 # worth having automated: the ones about concurrency and about what survives
 # losing Redis, which are exactly the bugs that do not reproduce on a
 # developer's machine.
@@ -109,14 +110,15 @@ jobs:
             up -d --build --wait \
             postgres redis redis-replica \
             redis-sentinel-1 redis-sentinel-2 redis-sentinel-3 \
-            minio cart-service inventory-service api-gateway audit-service
+            minio cart-service inventory-service api-gateway audit-service \
+            seller-service media-service
 
       # --wait returns when containers are healthy or running, but a running
       # uvicorn is not necessarily a listening one. Poll the ports the tests
       # actually use before asserting anything about them.
       - name: Wait for the services to answer
         run: |
-          for target in "cart-service 8007" "inventory-service 8013" "api-gateway 8000" "audit-service 8019"; do
+          for target in "cart-service 8007" "inventory-service 8013" "api-gateway 8000" "audit-service 8019" "seller-service 8020" "media-service 8018"; do
             set -- $target
             name=$1; port=$2
             for attempt in $(seq 1 60); do
@@ -181,6 +183,15 @@ jobs:
         run: python test_08_rate_limit_state_loss.py
         working-directory: tests/e2e
 
+      # The onboarding state machine against the real service, its database and
+      # its HTTP surface. Most of its length is spent trying to reach 'active'
+      # without a review -- and the last section asserts every transition left
+      # an outbox row, because that is how the rest of the platform will learn
+      # who may sell.
+      - name: Seller onboarding (e2e test_11)
+        run: python test_11_seller_onboarding.py
+        working-directory: tests/e2e
+
       # Kills the Redis primary and asserts the sentinels promote the replica,
       # carts keep serving, and writes resume. Runs after the other Redis tests
       # because it leaves the promoted node as primary -- a valid steady state,
@@ -230,7 +241,7 @@ jobs:
         if: failure()
         run: |
           docker compose -f docker-compose.yml -f docker-compose.apps.yml \
-            logs --tail 100 postgres redis redis-replica \
+            logs --tail 100 postgres redis redis-replica seller-service \
             redis-sentinel-1 redis-sentinel-2 redis-sentinel-3 minio \
             cart-service inventory-service api-gateway audit-service
 

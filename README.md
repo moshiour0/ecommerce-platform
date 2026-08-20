@@ -42,7 +42,7 @@ is best read as working-but-unproven.
 
 ## Running it
 
-Requires Docker with about 8 GB available. The stack is 41 containers, seven of
+Requires Docker with about 8 GB available. The stack is 42 containers, seven of
 them JVMs (three Kafka brokers, ZooKeeper, Schema Registry, Debezium,
 Elasticsearch), so it does not comfortably share a machine with anything large.
 
@@ -113,11 +113,11 @@ Three tiers, deliberately separated by what they need to run.
 
 | Tier | What it proves | Needs | Count |
 |---|---|---|---|
-| `tests/unit` | Decisions, against fake inputs and fake clocks | nothing | 539 |
+| `tests/unit` | Decisions, against fake inputs and fake clocks | nothing | 578 |
 | `services/api-gateway/test` | Rate limit tiering and exemptions | nothing | 24 |
 | `shared/libs/node-common/test` | Read-model ownership and Redis topology | nothing | 28 |
 | `tests/integration` | Behaviour under real parallel load | running stack | 5 |
-| `tests/e2e` | The platform end to end | running stack | 10 |
+| `tests/e2e` | The platform end to end | running stack | 11 |
 
 ```bash
 python -m pytest tests/unit -q
@@ -150,11 +150,11 @@ Two workflows, in [.github/workflows](.github/workflows):
 
 - **CI** — all three dependency-free tiers (Python units, the gateway's, and the
   shared Node library's), on every push and pull request. ~15 seconds.
-- **Stack tests** — boots an eleven-container slice (postgres, the Redis
+- **Stack tests** — boots a thirteen-container slice (postgres, the Redis
   primary/replica/sentinel set, minio, cart-service, inventory-service,
-  api-gateway, audit-service) and runs the three state-loss and failover e2e
-  tests, all four concurrency checks, and the object storage policy check.
-  ~3m.
+  api-gateway, audit-service, seller-service, media-service) and runs the
+  four state-loss, failover and onboarding e2e tests, all four concurrency
+  checks, and the object storage policy check. ~4m.
 
 `test_01` through `test_06` and `test_09` are not in CI. They drive the CQRS
 pipeline, the saga, and the Kafka layer, so they need most of the platform, and

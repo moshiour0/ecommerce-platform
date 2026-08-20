@@ -125,8 +125,33 @@ def test_credentials_are_overridable():
     assert cfg["database.hostname"] == "h"
 
 
-def test_every_database_in_the_map_is_provisioned():
-    # The deleted JSON files covered eight of fifteen. The gap was invisible:
-    # the seven missing services simply never produced events.
-    assert len(DATABASES) == 15
-    assert len(all_configs()) == 15
+def test_every_database_that_exists_gets_a_connector():
+    """The connector map must cover every database init-dbs.sh creates.
+
+    The original form of this test asserted a hardcoded 15, which caught the
+    gap it was written for -- the deleted JSON files covered eight of fifteen,
+    and the seven missing services simply never produced events -- but it made
+    adding a sixteenth database fail for the wrong reason. Reading init-dbs.sh
+    instead means the assertion is about the actual defect: a service database
+    whose outbox nothing is watching.
+    """
+    import re
+    from pathlib import Path
+
+    init_sh = (Path(__file__).resolve().parent.parent.parent
+               / "init-dbs.sh").read_text(encoding="utf-8")
+    created = set(re.findall(r"CREATE DATABASE (\w+);", init_sh))
+
+    assert created, "no CREATE DATABASE statements found in init-dbs.sh"
+
+    missing = created - set(DATABASES)
+    assert not missing, (
+        f"database(s) with no Debezium connector: {sorted(missing)}. Their "
+        f"outbox rows will never reach Kafka, and nothing will report it.")
+
+    unknown = set(DATABASES) - created
+    assert not unknown, (
+        f"connector(s) for database(s) init-dbs.sh does not create: "
+        f"{sorted(unknown)}")
+
+    assert len(all_configs()) == len(DATABASES)

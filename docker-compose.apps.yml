@@ -366,6 +366,27 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8018" ]
 
+  # Sellers: onboarding, KYC references, contract acceptance, status.
+  #
+  # 8020 is the last free slot in Rule 2's `8001-8020` core range. The range
+  # is now full: the next core service needs Rule 2 amended, and the obvious
+  # extension is 8021-8029, since 8030-8039 is workers and 8040-8049 is
+  # reserved for Media Center.
+  seller-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/seller-service
+    ports:
+      - "8020:8020"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/seller_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_SERVICE_NAME=seller-service
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8020" ]
+
   audit-service:
     <<: *python-service
     build:

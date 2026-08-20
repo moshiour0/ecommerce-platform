@@ -48,13 +48,13 @@ E2E_URL_CATALOG_SERVICE=http://catalog.internal:8080 python tests/e2e/run_suite.
 
 ## What runs in CI
 
-`test_07_cart_cache_coherence`, `test_08_rate_limit_state_loss` and
-`test_10_redis_failover` run on every push, in
+`test_07_cart_cache_coherence`, `test_08_rate_limit_state_loss`,
+`test_11_seller_onboarding` and `test_10_redis_failover` run on every push, in
 `.github/workflows/stack-tests.yml`, alongside the concurrency and storage
-checks in `tests/integration`. That workflow boots an eleven-container slice —
+checks in `tests/integration`. That workflow boots a thirteen-container slice —
 postgres, the Redis primary/replica/sentinel set, minio, cart-service,
-inventory-service, api-gateway, audit-service — which is everything those tests
-touch.
+inventory-service, api-gateway, audit-service, seller-service, media-service —
+which is everything those tests touch.
 
 `test_01` through `test_06` and `test_09` are **manual**. The first six drive
 the CQRS pipeline (Debezium → Kafka → Elasticsearch) and the saga, so trimming

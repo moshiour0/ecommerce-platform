@@ -28,7 +28,7 @@ import sys
 
 import httpx
 
-from config import describe, mesh_exec_prefix, service_url
+from config import describe, mesh_exec_prefix, redis_primary_service, service_url
 
 GATEWAY = service_url("api-gateway")
 # Unrouted on purpose: it stops at the gateway's own 404 handler, so exhausting
@@ -48,7 +48,7 @@ def check(condition, ok_message, fail_message):
 
 def redis_cli(*args):
     """redis-cli inside the mesh. docker exec or kubectl exec, per target."""
-    result = subprocess.run(mesh_exec_prefix("redis") + ["redis-cli", *args],
+    result = subprocess.run(mesh_exec_prefix(redis_primary_service()) + ["redis-cli", *args],
                             capture_output=True, text=True, timeout=20)
     if result.returncode != 0:
         print(f"      [!] redis-cli {' '.join(args)}: {result.stderr.strip()}")

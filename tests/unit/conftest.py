@@ -134,3 +134,8 @@ redis_topology = load_module(
     "redis_topology_under_test",
     "shared/libs/python-common/redis_topology.py",
 )
+
+seller_rules = load_module(
+    "seller_rules_under_test",
+    "services/seller-service/app/services/seller_rules.py",
+)
