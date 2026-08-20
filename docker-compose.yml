@@ -202,8 +202,17 @@ services:
     # would report healthy before it holds any data. master_link_status is the
     # field that knows whether the handshake actually completed -- see
     # redis_topology.check_replication for why role:slave alone proves nothing.
+    #
+    # `role:master` is accepted too, and that is not a loophole. Sentinel does
+    # not fail back, so after a promotion THIS container is the primary and
+    # has no master to be linked to. A check that only accepted a linked
+    # replica would mark the healthy, serving primary as unhealthy forever --
+    # a false alarm in monitoring, and worse, a `condition: service_healthy`
+    # that can never be met on the next bring-up. Found exactly that way: the
+    # e2e failover test left this node promoted and the container went red
+    # while serving every read and write correctly.
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli info replication | grep -q 'master_link_status:up'"]
+      test: ["CMD-SHELL", "redis-cli info replication | grep -qE 'master_link_status:up|role:master'"]
       interval: 5s
       timeout: 3s
       retries: 30

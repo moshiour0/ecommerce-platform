@@ -27,6 +27,17 @@
 # when the container does. Sentinel then tracks the topology by address from
 # then on -- it learns the replica from the primary's INFO output, and after a
 # promotion it follows the new primary's address on its own.
+#
+# The trade-off, which is worth knowing before it surprises someone: addresses
+# are per-container, so `compose up --force-recreate` on a Redis node gives it
+# a new one and the sentinels' recorded address goes stale. Observed, and the
+# outcome was correct -- the sentinels found the old address unreachable and
+# promoted the other node, which is exactly what they should do when a primary
+# stops answering. It just means a recreate can trigger a failover. Restarting
+# a node (`docker restart`) keeps its address and does not.
+#
+# In production this does not arise: a managed Redis or a StatefulSet with
+# stable network identity keeps the address across restarts.
 set -eu
 
 MASTER_NAME="${REDIS_MASTER_NAME:-mymaster}"
