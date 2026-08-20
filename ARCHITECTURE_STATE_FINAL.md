@@ -1,4 +1,4 @@
-# MASTER SYSTEM CONTEXT: Enterprise E-Commerce Microservices Platform
+# MASTER SYSTEM CONTEXT: Multi-Vendor Marketplace (Bangladesh, COD-first)
 
 Role Directive: You are "Anti-Gravity", a Principal Distributed Systems Architect. Prioritize correctness, isolation, idempotency, observability, and fault tolerance. Never invent services, schemas, or flows that are not present in the repository or explicitly approved in this document. Do not deviate from these rules under any circumstances.
 
@@ -11,13 +11,24 @@ Role Directive: You are "Anti-Gravity", a Principal Distributed Systems Architec
 > read "PHASE 1 - Step 1.1"), which caused a stale audit to be actioned as
 > current. Do not record completion in prose. Record it in commits.
 
-*   Phase: Correctness hardening on a partially implemented platform.
-*   Status: All 20 services and 6 workers are scaffolded. Roughly half of the
-    service directories contain substantive logic; the remainder are stubs or
-    empty. Every Kubernetes manifest is currently empty. Verify before assuming.
-*   Current Priority: Close the saga command/event loop, complete payment
-    compensation, and implement consumer-side idempotency. Feature work is
-    blocked until an order can complete and compensate end to end.
+*   Phase: Marketplace build-out on a hardened single-tenant core.
+*   Product: A multi-vendor marketplace for **Bangladesh**, modelled on Daraz
+    rather than on Alibaba's B2B flow. Many sellers, one buyer cart, one
+    checkout, orders split per seller. Decided 2026-08-21; see
+    MARKETPLACE_ROADMAP.md §8, which is the authority on *why* and is not
+    restated here.
+*   **Cash on delivery is the primary payment path.** This is a structural
+    decision, not a payment option — see §3d. Card is secondary.
+*   The intended differentiator is the **Media Center** (§3c): AI try-on, 3D
+    view, a social feed. Reserved, seamed, deliberately not built.
+*   Team: 10 engineers, which is what the roadmap's phasing assumes.
+*   Status: 21 services and 6 workers are scaffolded; roughly half the service
+    directories contain substantive logic. Every Kubernetes manifest under
+    `infrastructure/k8s/services` is currently empty. Verify before assuming.
+*   Current Priority: the marketplace path — enforce seller permission on
+    listing, split orders per seller, then the COD order lifecycle and courier
+    settlement. The single-tenant order loop (saga, compensation, consumer
+    idempotency) is closed and proven by `tests/e2e`.
 
 ## 2. Authoritative Architectural Rules
 1.  Strict Data Isolation: No microservice may share a database. Services default to PostgreSQL, but may use specialized datastores where semantically appropriate (e.g., Redis exclusively for Cart, Elasticsearch for Search). No cross-database queries are permitted.
@@ -50,8 +61,12 @@ Role Directive: You are "Anti-Gravity", a Principal Distributed Systems Architec
 
     **Payment compensation is mandatory and was previously absent from this document entirely** — the only compensation described was inventory release. That omission is why no refund path existed in code: money could be taken with no defined way to return it.
 
+    **Under COD the table above does not apply, because there is nothing to refund.** No money moves at checkout, so the compensating step for a cancelled COD order is not a refund — it is releasing stock, and after dispatch it is a return-to-origin that costs the platform shipping in both directions. The COD forward path and its inverses are in §3d. Both tables are normative; which one applies is decided by the order's payment method and by nothing else.
+
     **Blind compensation contract:** a compensating command must succeed as a no-op when the forward step never took effect. `RefundPaymentCommand` for an order that was never charged must return success, not an error. When a saga times out at `INVENTORY_RESERVED` it is unknowable whether payment succeeded with a lost acknowledgement, so **both** legs are compensated unconditionally. Compensations are therefore idempotent by construction.
-6.  No Binary Floating Point: Use integer cents or strict decimal types for all monetary calculations.
+6.  No Binary Floating Point: Use integer minor units or strict decimal types for all monetary calculations. **The minor unit is the poisha** (1 BDT = 100 poisha), so the existing `*_cents` columns and fields are correct in arithmetic and wrong in name; they are not renamed, because a rename across every service, event schema and read model buys nothing that a comment does not. Read `_cents` as "minor units of the order's currency".
+
+    Multi-currency must stay *possible* without being built: cross-border sourcing is the obvious later expansion, and a schema that hardcodes BDT would have to be migrated with live orders in it. Every monetary amount therefore travels with an explicit `currency` field defaulting to `BDT`, and no service may assume the default.
 7.  The BFF Rule: BFFShop and BFFCheckout are strictly orchestrators. They contain zero business logic. They fetch, format, and forward. The BFF must handle eventual consistency gracefully. `bff-checkout` must always validate the final cart state against the core `catalog-service` and `pricing-service` synchronously before submitting to `order-saga`, never relying on the `search-service` read-model for checkout.
 
     **BFF / Saga boundary (previously ambiguous — both were drawn calling payment, tax, delivery-quote and fraud).** The split is by mutation, not by domain: a BFF may call any service for a **read-only quote, validation or pre-screen**. A BFF may **never** invoke a step that moves money or reserves stock. `bff-checkout` calling `payment-service` directly is prohibited — it would bypass the state machine and create a double-charge path. Charging is reachable only through `order-saga`. Fraud pre-screening at the BFF is advisory; the saga does not re-run it.
@@ -94,9 +109,12 @@ Role Directive: You are "Anti-Gravity", a Principal Distributed Systems Architec
     **Correlation contract:** every command carries `order_id`, and every service result event must echo `order_id` back in its outbox payload. Without it the dispatcher cannot map a service result to a saga, and correlation degrades to in-memory state in the caller.
 *   inventory-service: Source of truth for stock. Uses pessimistic row-level locking (SELECT FOR UPDATE).
 *   fraud-service: Owns risk checks, transaction footprinting, and device compromise vectors (including malicious APK signatures, phishing telemetry, or zero-click attack patterns). Must enforce velocity limits on checkout requests per user/IP/device-fingerprint combination to prevent hoarding.
+
+    **Under COD the primary score is refusal risk, not card fraud.** There is no stolen card to detect at checkout, because no card is presented. The loss is a **return-to-origin**: goods dispatched, refused at the door, shipping paid twice and the item restocked or damaged. The signals are different in kind — address completeness and deliverability, prior refusals against this phone number or address, order value against the district's norm, category, and whether the buyer answers the courier's confirmation call. Card-fraud scoring stays for the secondary card path; it is not the default any more.
 *   payment-service: PCI-compliant token handling and intent creation.
 *   fulfillment-service: Post-checkout ONLY. Generates courier labels, updates tracking.
 *   notification-service: Owns notification state and dispatch (Email/SMS/Push).
+*   seller-service: Seller onboarding, KYC document references, versioned commission contracts, and seller status. **The authority on whether a seller may sell** — see §4b. Owns `seller_db`. Holds no document contents and no payout account numbers.
 *   media-service: Media upload lifecycle, quarantine, scanning, and metadata.
 *   audit-service: Immutable audit records.
 
@@ -199,16 +217,100 @@ The social feed is **fan-out on read** until there is a measured reason to do
 otherwise. Fan-out on write is an optimisation with a large operational cost,
 and building it before the feed has users is speculative.
 
-## 4. Webhook Deduplication Strategy (4-Layers)
-External PSP webhooks must pass this exact sequence:
-1. HMAC-SHA256 Signature Verification.
-2. Redis SET NX (Fast path / 7-day TTL).
-3. PostgreSQL INSERT ON CONFLICT DO NOTHING (Durable path).
-4. Direct emission to the local outbox (No synchronous HTTP calls to internal services).
+### 3d. The marketplace model: split orders and cash on delivery
 
-## 5. Event Mesh & Reliability Rules
+Declared here, mostly not built. This is the contract the implementation must
+follow, in the same spirit as §3c — writing it down first is what stops two
+services inventing incompatible halves of it.
 
-### 4b. Seller onboarding (implemented)
+**One cart, many sellers, many orders.** A buyer fills one cart from any number
+of shops and checks out once. What comes out is one `Order` the buyer sees and
+one `SellerOrder` per seller, because everything after checkout is per-seller:
+stock comes from that seller, the courier collects from that seller's address,
+the money is owed to that seller, and a refused delivery is that seller's
+return.
+
+```
+Cart (buyer)  ──checkout──▶  Order (one, buyer-facing: total, address, status)
+                                 │
+                                 ├── SellerOrder A  (seller A's lines, courier, payout)
+                                 └── SellerOrder B  (seller B's lines, courier, payout)
+```
+
+The buyer-facing `Order` status is **derived** from its SellerOrders and never
+stored as an independent truth. Two sources for "is this order delivered" is
+two answers the first time a courier is late.
+
+**Cash on delivery inverts the lifecycle.** Under a card flow the money is
+captured before fulfilment and the risk is a chargeback. Under COD the money
+arrives days later from a courier's settlement, and the risk is that nobody
+answers the door.
+
+| | Card path (secondary) | COD path (primary) |
+|---|---|---|
+| Money moves | at checkout | at delivery |
+| The saga waits on | a PSP webhook | a courier settlement file |
+| Inventory held for | minutes | days |
+| Loss vector | chargeback | **return-to-origin** |
+| Seller payout follows | PSP payout schedule | courier remittance, reconciled |
+
+**COD state vocabulary** (normative, and distinct from the card vocabulary in
+§3 — a SellerOrder is in exactly one of these):
+
+| State | Meaning | Terminal |
+|---|---|---|
+| `PENDING` | Created; reservation requested | no |
+| `INVENTORY_RESERVED` | Stock held for this seller's lines | no |
+| `CONFIRMED` | Accepted by the seller; awaiting dispatch | no |
+| `DISPATCHED` | Handed to a courier | no |
+| `DELIVERED` | Buyer took it and paid the courier | no |
+| `SETTLED` | Courier remitted; seller payable | **yes** |
+| `RTO_IN_TRANSIT` | Refused or undeliverable; coming back | no |
+| `RETURNED` | Back with the seller; stock restored | **yes** |
+| `CANCELLED` | Ended before dispatch; stock released | **yes** |
+
+`DELIVERED` is deliberately **not** terminal. The order is complete for the
+buyer and unfinished for the platform: the cash is with the courier, and until
+it is remitted and reconciled the seller cannot be paid. Treating delivery as
+the end is how a marketplace loses track of money it is holding.
+
+**Compensation under COD** (Rule 5's inverse table, for this path):
+
+| Forward step | Compensating step | Notes |
+|---|---|---|
+| `ReserveInventoryCommand` | `ReleaseInventoryCommand` | as the card path |
+| `ConfirmSellerOrderCommand` | `CancelSellerOrderCommand` | only before dispatch |
+| `DispatchCommand` | *none* — an RTO, not a rollback | goods must physically return |
+
+The third row is the important one. **After dispatch there is no compensation,
+only a return.** A saga cannot undo a van. `RTO_IN_TRANSIT` is a forward state
+that happens to end where it started, and the shipping is spent either way —
+which is exactly why refusal risk is scored before dispatch, not after.
+
+**The reservation TTL cannot be the card TTL.** Stock is held from checkout to
+delivery, which is days. A 15-minute saga reaper (§3) applied to a COD order
+would release stock under an order already on a van. The reaper's timeout is
+therefore per-path, and the COD path's staleness checks are per-state — a
+`CONFIRMED` order that has not been dispatched in 48 hours is a seller
+problem and an alert, not an expiry.
+
+**Escrow, in one line, because it decides the ledger's shape.** Money collected
+by a courier belongs to the seller minus commission, and the platform holds it
+in between. That is a liability, so it is a ledger entry from the moment of
+delivery — not a number computed at payout time from orders. `payment-service`
+owns that ledger; the courier settlement file is reconciled against it, and a
+mismatch is an operational alert rather than a silent adjustment.
+
+**Couriers are an external integration with many providers.** Pathao,
+Steadfast, RedX, Sundarban and the rest each have their own API, their own
+status vocabulary and their own settlement format. They belong behind one
+internal contract in `fulfillment-service`, exactly as the PSP does behind
+`payment-service` — never with per-provider logic leaking into the saga.
+
+**Not built.** No `SellerOrder` table, no COD saga path, no courier adapter, no
+escrow ledger. `order-saga` today implements the card vocabulary in §3 only.
+
+### 3e. Seller onboarding (implemented)
 
 `seller-service` on port 8020, owning `seller_db`. migrations/012 gave every
 product a `seller_id` and said plainly that the id pointed at a service that
@@ -274,7 +376,16 @@ answer.
 `bff-seller` — the seller dashboard of orders, inventory, payouts and metrics
 — is also not built. Sellers must not reach internal services directly.
 
-### 5.0 Redis availability (implemented)
+## 4. Webhook Deduplication Strategy (4-Layers)
+External PSP webhooks must pass this exact sequence:
+1. HMAC-SHA256 Signature Verification.
+2. Redis SET NX (Fast path / 7-day TTL).
+3. PostgreSQL INSERT ON CONFLICT DO NOTHING (Durable path).
+4. Direct emission to the local outbox (No synchronous HTTP calls to internal services).
+
+## 5. Event Mesh & Reliability Rules
+
+### 5a. Redis availability (implemented)
 
 Primary + replica + three sentinels, quorum two. Clients connect **through the
 sentinels**, never to a hostname.
@@ -322,7 +433,7 @@ resume, and the old primary rejoins as a replica rather than a second primary.
 It discovers which container is primary rather than assuming, because sentinel
 does not fail back.
 
-### 5.0b Broker replication (implemented)
+### 5b. Broker replication (implemented)
 
 Three brokers, `replication.factor=3`, `min.insync.replicas=2`, `acks=all`.
 Each of those four is load-bearing and the set is not separable:
@@ -374,14 +485,49 @@ consumer offset — the same defect the Redis volume fixed one layer down.
 *   **Async Trace Propagation:** The OpenTelemetry `trace_id` and `span_id` must be injected as fields in every `OutboxMessage.payload` by the producing service at write time. Kafka consumers must extract these fields and create a linked child span, ensuring full end-to-end trace continuity across the synchronous→asynchronous boundary. This is the only mechanism by which traces survive the Kafka event mesh.
 
 ## 7. Allowed Implementation Order
-1. Fix naming and responsibility conflicts. (COMPLETED)
-2. Finalize env vars, ports, databases, and Docker-compose infra. (COMPLETED)
-3. Harden the order lifecycle contract.
-4. Complete idempotency and outbox flow in every state-changing service.
-5. Wire observability for critical paths.
-6. Validate security policies.
-7. Add failure injection and recovery tests.
-8. Expand features and scaling.
+
+The first list was written for a single-tenant platform and is finished. What
+follows is the marketplace order, and it is an order rather than a backlog:
+each step is a precondition for the next, and skipping one produces work that
+has to be redone rather than extended.
+
+**Done, and provable from `git log` and `tests/e2e` rather than from this
+list:**
+
+1. Naming and responsibility conflicts resolved.
+2. Env vars, ports, databases and compose infrastructure finalised.
+3. Order lifecycle contract hardened; the saga closes and compensates.
+4. Idempotency and outbox flow in every state-changing service.
+5. Failure injection and recovery: broker loss, Redis failover, cache
+   eviction, rate-limit state loss, concurrency under real contention.
+6. Infrastructure durability: Kafka RF=3, Redis primary/replica/sentinel,
+   object storage with a policy generated from the purpose taxonomy.
+7. Sellers exist: onboarding, KYC references, versioned contracts (§3e).
+
+**Next, in this order:**
+
+8. **Enforce seller permission on listing.** `catalog-service` must refuse a
+   product from a seller who may not sell. Without it §3e is bookkeeping —
+   onboarding decides a status nothing consults. This is the smallest step
+   that makes the seller lifecycle real.
+9. **Split orders per seller.** The `SellerOrder` aggregate in §3d. Every
+   later step — courier assignment, payout, RTO, seller metrics — is per
+   seller and cannot be expressed against a single flat order.
+10. **The COD order path.** The state vocabulary in §3d, the reservation TTL
+    that survives days rather than minutes, and refusal risk in
+    `fraud-service` before dispatch.
+11. **Courier integration behind one contract**, in `fulfillment-service`, and
+    the settlement reconciliation that follows from it.
+12. **The escrow ledger**, in `payment-service`: money held between delivery
+    and payout is a liability, recorded when it is collected.
+13. **`bff-seller`**, the seller dashboard. Sellers must never reach internal
+    services directly (Rule 7).
+14. **Ranking**: products and reviews first, then proximity — one pipeline,
+    not per-surface sort orders.
+15. **Media Center**, once the marketplace has sellers and orders (§3c).
+
+Observability (§6) and security policy validation (Rule 8) are not steps in
+this list. They are conditions on every step in it.
 
 ## 8. Truth Statement
 This document is the current architectural source of truth for the repository. It is a living document and may be updated only when the architecture itself changes.

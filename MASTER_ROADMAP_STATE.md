@@ -1,5 +1,26 @@
 # ANTI-GRAVITY MASTER ROADMAP & CHECKPOINT STATE
 
+> ## SUPERSEDED — 2026-08-21
+>
+> This file plans a **single-tenant** e-commerce platform. The product is now a
+> **multi-vendor marketplace for Bangladesh with cash on delivery as the
+> primary payment path**, which changes the order lifecycle rather than adding
+> to it.
+>
+> It is kept for history and should not be used to decide what to build.
+>
+> | For | Read |
+> |---|---|
+> | What to build next, in order | [ARCHITECTURE_STATE_FINAL.md](ARCHITECTURE_STATE_FINAL.md) §7 |
+> | The architecture and its rules | [ARCHITECTURE_STATE_FINAL.md](ARCHITECTURE_STATE_FINAL.md) |
+> | Why the marketplace is shaped this way | [MARKETPLACE_ROADMAP.md](MARKETPLACE_ROADMAP.md) |
+> | What is actually built | `git log`, and `tests/e2e` |
+>
+> Three documents disagreeing about status is the exact failure the note below
+> was written about. Rather than let this one drift into being a fourth, it is
+> marked closed.
+
+
 > **What `[X]` means here: scaffolded and designed — not verified working.**
 >
 > This file previously declared `CURRENT STATUS: [PHASE 1 - Step 1.1]` in its

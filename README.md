@@ -1,11 +1,25 @@
-# E-Commerce Microservices Platform
+# Multi-Vendor Marketplace (Bangladesh, COD-first)
 
-An event-driven commerce backend built to explore the problems that only appear
-under concurrency: overselling, double checkout, duplicate charges, lost carts,
-and sagas that strand an order halfway through. Twenty services and six workers
+An event-driven marketplace backend: many sellers, one buyer cart, orders split
+per seller. Built to hold up under the problems that only appear at
+concurrency — overselling, double checkout, duplicate charges, lost carts, and
+sagas that strand an order halfway through. Twenty-one services and six workers
 communicate through a transactional outbox and Kafka, orchestrated by an
 explicit saga state machine with compensation for every step that moves money
 or stock.
+
+Two decisions shape everything else, and both are recorded in
+[MARKETPLACE_ROADMAP.md](MARKETPLACE_ROADMAP.md) §8:
+
+- **Cash on delivery is the primary payment path**, not an option bolted onto a
+  card flow. Money arrives days after fulfilment from a courier's settlement,
+  the loss vector is a refused delivery rather than a chargeback, and inventory
+  is held for days rather than minutes. See
+  [ARCHITECTURE_STATE_FINAL.md](ARCHITECTURE_STATE_FINAL.md) §3d.
+- **The Media Center** — AI try-on, 3D view, a social feed — is the intended
+  differentiator. It is seamed and deliberately not built: §3c reserves its
+  ports, its event contracts and its object-storage prefixes so it can arrive
+  additively rather than as a migration.
 
 It runs on Docker Compose or Kubernetes, and the same end-to-end suite verifies
 either one.
@@ -16,7 +30,7 @@ This repository documents what is built, not what is planned.
 
 | | Count | |
 |---|---|---|
-| Services | 20 | all carry substantive logic |
+| Services | 21 | all carry substantive logic |
 | Workers | 6 | `saga-dispatcher`, `stream-processor`, `notification-worker`, `reindex-worker`, `webhook-handler`, `dlq-reprocessor` — the six §3b names, all implemented |
 | Kubernetes manifests | 32 | generated from compose, never hand-edited |
 
