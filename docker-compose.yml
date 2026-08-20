@@ -1,3 +1,25 @@
+x-redis-sentinel: &redis-sentinel
+  image: redis:7-alpine
+  restart: unless-stopped
+  depends_on:
+    redis:
+      condition: service_healthy
+  entrypoint: ["/bin/sh", "/etc/redis/redis-sentinel.sh"]
+  environment:
+    REDIS_MASTER_NAME: ${REDIS_MASTER_NAME:-mymaster}
+    REDIS_MASTER_HOST: redis
+    REDIS_SENTINEL_QUORUM: "2"
+  volumes:
+    - ./docker/redis-sentinel.sh:/etc/redis/redis-sentinel.sh:ro
+  healthcheck:
+    test: ["CMD-SHELL", "redis-cli -p 26379 ping | grep -q PONG"]
+    interval: 5s
+    timeout: 3s
+    retries: 20
+    start_period: 5s
+  networks:
+    - mesh
+
 # ------------------------------------------------------------------
 # Kafka: three brokers, replication factor 3
 # ------------------------------------------------------------------
@@ -112,11 +134,32 @@ services:
     networks:
       - mesh
 
+  # ------------------------------------------------------------------
+  # Redis: a primary, a replica, and three sentinels
+  # ------------------------------------------------------------------
+  # Everything this platform keeps in Redis has a durable counterpart, so
+  # losing the data is survivable -- test_07 and test_08 prove exactly that.
+  # What is not survivable is Redis being *unreachable*: carts stop serving,
+  # the rate limiter stops answering, and webhook dedup falls back to Postgres
+  # for every call.
+  #
+  # So the thing being bought here is failover time, not durability, and a
+  # bare replica does not buy it -- promoting one by hand is the same outage
+  # with extra steps. Sentinel is the part that makes the replica worth
+  # having: three of them, quorum two, so one can die and the rest still form
+  # a majority.
+  #
+  # Clients connect through the sentinels rather than to a hostname, because
+  # after a failover the container named `redis` is the replica.
   redis:
     image: redis:7-alpine
     restart: unless-stopped
     ports:
       - "6379:6379"
+    # No --replica-announce-ip. The sentinels work in addresses, not names
+    # (docker/redis-sentinel.sh explains why hostnames put sentinel into TILT
+    # mode instead of failing over), so a node announcing a hostname would be
+    # announcing something its monitor cannot use.
     # The image declares VOLUME /data, so without a named volume here Docker
     # creates an anonymous one per container and every recreate starts empty.
     # That is why a rebuild lost every cart and every rate-limit counter.
@@ -136,6 +179,51 @@ services:
       retries: 20
     networks:
       - mesh
+
+  redis-replica:
+    image: redis:7-alpine
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "6380:6379"
+    # replicaof is the starting position, not a permanent one: after a
+    # failover the sentinels rewrite this node's role, and this flag only
+    # decides where it begins on a cold start.
+    command:
+      - redis-server
+      - --replicaof
+      - redis
+      - "6379"
+    volumes:
+      - redis_replica_data:/data
+    # `ping` answers while a replica is still loading its first sync, so it
+    # would report healthy before it holds any data. master_link_status is the
+    # field that knows whether the handshake actually completed -- see
+    # redis_topology.check_replication for why role:slave alone proves nothing.
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli info replication | grep -q 'master_link_status:up'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    networks:
+      - mesh
+
+  # Three sentinels rather than one. A single sentinel is a single point of
+  # failure for the *decision* to fail over, which leaves the replica as
+  # decoration -- and a quorum of one would let one sentinel that has merely
+  # lost the network promote a replica while the real primary is still taking
+  # writes.
+  #
+  # Each is a few megabytes; the whole quorum costs less than one service.
+  redis-sentinel-1:
+    <<: *redis-sentinel
+  redis-sentinel-2:
+    <<: *redis-sentinel
+  redis-sentinel-3:
+    <<: *redis-sentinel
 
   # Object storage for media bytes. They never pass through a service: uploads
   # go to pre-signed URLs issued by media-service, and public reads come
@@ -352,6 +440,10 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  # The replica keeps its own RDB. Sharing the primary's volume would have two
+  # servers writing one dump file, and a failover would then hand the promoted
+  # node a snapshot the demoted one was mid-write on.
+  redis_replica_data:
   minio_data:
   # One per broker. Without these the log directories lived in the container
   # filesystem, so recreating a broker discarded its replicas -- and recreating

@@ -420,8 +420,12 @@ Size for your actual traffic and one order of magnitude above, not for Amazon:
   and `tests/e2e/test_09_broker_loss.py` proves a broker can die without losing
   an acknowledged write. In production this becomes a managed cluster across
   three availability zones; the settings are the same.
-- Redis: cluster or sentinel. Today it is a single instance and a single point of
-  failure for carts and rate limiting.
+- Redis: cluster or sentinel. ✅ **Done** — primary, replica and three sentinels
+  with quorum two, and every client connects through the sentinels rather than
+  to a hostname. `tests/e2e/test_10_redis_failover.py` kills the primary and
+  proves the promotion happens, carts keep serving and writes resume. In
+  production this becomes a managed Redis with automatic failover across
+  availability zones; the client configuration is the same.
 - Elasticsearch: 3 data nodes minimum; index per month for behaviour data.
 
 Load-test before every peak sale, and know your numbers: orders per second at
@@ -540,34 +544,78 @@ Concrete, small, and each one buys information or removes risk:
    `ARCHITECTURE_STATE_FINAL.md`. Half a day, and it determines a year of work.
 2. **Add the Media Center seam** from §3.6 — the `purpose` column, the event
    contracts in the architecture document, the reserved ports. One afternoon.
-3. ~~**Set Kafka to RF=3**~~ ✅ done. **Give Redis a replica** in the compose
-   file, so your local environment stops teaching you habits that fail in
-   production. Redis is still one instance and still a single point of failure
-   for carts and rate limiting.
+3. ~~**Set Kafka to RF=3 and give Redis a replica**~~ ✅ done, both. The local
+   environment now fails over rather than teaching habits that break in
+   production.
 
 `seller_id` landed on 2026-08-16: every product has an owner, the event and
 the read model carry it, and search can be filtered to one seller. The Media
-Center seam, object storage, and Kafka RF=3 all landed on 2026-08-17. Redis
-replication is the last item on this list; after that the near-term work is
-D1–D3, which are decisions rather than code.
+Center seam, object storage and Kafka RF=3 landed on 2026-08-17, and Redis
+failover on 2026-08-21. That closes the near-term infrastructure list.
+
+D1-D3 are answered (§8). The next work is product, not plumbing: seller
+onboarding and the COD order path.
 
 ---
 
-## 8. What would change this plan
+## 8. The three decisions, answered
 
-Three answers I do not have, and each one materially reshapes the above:
+Answered 2026-08-21. These are no longer open, and the rest of this document
+should be read through them.
 
-1. **Which market?** If it is Bangladesh or Pakistan, COD and local couriers move
-   to Phase 1 and card payments become secondary. If it is B2B cross-border like
-   Alibaba, the model changes again: quotations, MOQs, escrow terms, and trade
-   assurance instead of a cart.
-2. **How many engineers, and for how long?** The phases above assume 6–10. At 2–3
-   the honest plan is narrower: pick one city, one category, and a hundred
-   sellers, and get that working before generalising.
-3. **What is the actual differentiator?** If it is the Media Center, an argument
-   exists for building a thin marketplace on an existing platform and spending
-   your engineering on try-on instead. That is a strategy question, not an
-   architecture one, but it is worth asking before committing two years.
+**D1 - Market: Bangladesh.** Daraz is the reference, not Alibaba's B2B model.
+Consumer marketplace, many sellers, one cart.
 
-Tell me those three and I will tighten this into a plan with real dates and a
-service-by-service work breakdown.
+The consequence is larger than a payment method: **cash on delivery is the
+primary path, and card is secondary.** COD is not a payment option bolted onto
+a card flow — it inverts the order lifecycle:
+
+| | Card-first | COD (what we are building) |
+|---|---|---|
+| When money moves | at checkout, before fulfilment | at delivery, days later |
+| What the saga waits on | a PSP webhook | a courier settlement file |
+| The loss vector | chargebacks | **return-to-origin** — refused deliveries, shipping paid twice |
+| What fraud scores | stolen cards | likelihood of refusal at the door |
+| Inventory hold | minutes | days, until delivery confirms |
+| Seller payout | PSP payout schedule | courier remittance, reconciled |
+
+Build the COD path first and the card path second. A design that assumes
+card-first needs rework through the saga, fraud, ledger and reservation TTLs
+simultaneously.
+
+**D2 - Team: 10 engineers.** The phased plan above assumed 6-10, so the
+phasing stands as written. Ten is enough to run three or four streams in
+parallel — marketplace core, payments/COD, search and ranking, seller tools —
+but it is not enough to also build the Media Center's ML. That stays a seam
+(§3.6) until the marketplace earns it.
+
+**D3 - Differentiator: the Media Center.** Try-on, 3D view and the social feed
+are the actual bet, not decoration. That justifies the seam work already done —
+the `purpose` taxonomy, the reserved ports, the declared event contracts, the
+object-storage prefixes with their own access policy — and it means the
+commerce side must never call it synchronously. A product page that cannot
+render because a feed is slow is a self-inflicted outage.
+
+It does **not** justify building try-on before the marketplace works. The
+counter-argument in the original version of this section — put a thin
+marketplace on someone else's platform and spend the engineering on try-on —
+is worth restating once and then setting aside: with ten engineers and a
+COD-first Bangladeshi market, the marketplace *is* the hard part, and a
+try-on feature attached to a marketplace that cannot pay its sellers is a demo.
+
+### What this fixes about the plan
+
+- COD moves into Phase 1, not Phase 2. The order saga, the escrow ledger and
+  the courier integration are the same piece of work and cannot be sequenced
+  apart.
+- RTO prediction becomes a first-class job for `fraud-service`, replacing the
+  card-fraud framing it currently has.
+- Local courier integrations (Pathao, Steadfast, RedX, Sundarban and the rest)
+  are Phase 1 infrastructure, not an afterthought. Each is an external system
+  with its own settlement format; they belong behind one internal contract from
+  the start, exactly as the PSP is.
+- Bangla language support and BDT-only pricing simplify the money model — Rule
+  6's integer cents becomes integer poisha — but multi-currency should stay
+  *possible*, since cross-border sourcing is the obvious later expansion.
+- The Media Center's ML work stays out of the critical path until the
+  marketplace has sellers and orders.

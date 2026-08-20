@@ -3,13 +3,12 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
-const Redis = require('ioredis');
+const { createRedisClient, describeConnection } = require('node-common/redis_client');
 const logger = require('./utils/logger');
 const cors = require('cors');
 
 const PORT = process.env.PORT || 8003;
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-jwt-key';
-const REDIS_URL = process.env.REDIS_URL || 'redis://redis:6379';
 
 const app = express();
 app.use(cors());
@@ -47,9 +46,15 @@ io.use((socket, next) => {
   }
 });
 
-// Initialize ioredis clients for Pub/Sub
-const pubClient = new Redis(REDIS_URL);
-const subClient = new Redis(REDIS_URL);
+// Pub/Sub clients, sentinel-aware like every other Redis consumer.
+//
+// Two separate connections, not one shared: a connection in subscriber mode
+// cannot issue ordinary commands, so publishing over the subscriber would
+// fail. Both follow the primary -- a subscriber attached to a replica would
+// keep receiving until the moment of a failover and then go quiet, which
+// looks like "no events happening" rather than like a fault.
+const pubClient = createRedisClient(process.env);
+const subClient = createRedisClient(process.env);
 
 subClient.on('error', (err) => {
   logger.error(`Redis Subscriber Error: ${err.message}`);
@@ -64,7 +69,7 @@ subClient.subscribe(...channels, (err, count) => {
   if (err) {
     logger.error(`Failed to subscribe to Redis channels: ${err.message}`);
   } else {
-    logger.info(`Subscribed to ${count} Redis channels: ${channels.join(', ')}`);
+    logger.info(`Subscribed to ${count} Redis channels: ${channels.join(', ')} (${describeConnection(process.env)})`);
   }
 });
 

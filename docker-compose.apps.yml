@@ -57,6 +57,10 @@ services:
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in .env (see .env.example)}
       # Shared store for the tiered rate limiter (Rule: api-gateway boundary).
       - REDIS_URL=redis://redis:6379
+      # Sentinel wins over the URL above. Kept side by side so a
+      # single-Redis deployment still works unchanged.
+      - REDIS_SENTINELS=${REDIS_SENTINELS:-redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379}
+      - REDIS_MASTER_NAME=${REDIS_MASTER_NAME:-mymaster}
 
   bff-shop:
     <<: *node-service
@@ -117,6 +121,10 @@ services:
     environment:
       - PORT=8003
       - REDIS_URL=redis://redis:6379
+      # Sentinel wins over the URL above. Kept side by side so a
+      # single-Redis deployment still works unchanged.
+      - REDIS_SENTINELS=${REDIS_SENTINELS:-redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379}
+      - REDIS_MASTER_NAME=${REDIS_MASTER_NAME:-mymaster}
       # Rule 6.3: the trace must start at the edge, not at order-saga.
       # NODE_OPTIONS loads OpenTelemetry before express/axios are
       # required -- instrumentation patches `require`, so importing it
@@ -183,6 +191,10 @@ services:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/cart_db
       # Cart contents and the checkout mutex both live here.
       - REDIS_URL=redis://redis:6379/0
+      # Sentinel wins over the URL above. Kept side by side so a
+      # single-Redis deployment still works unchanged.
+      - REDIS_SENTINELS=${REDIS_SENTINELS:-redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379}
+      - REDIS_MASTER_NAME=${REDIS_MASTER_NAME:-mymaster}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8007" ]
 
@@ -476,6 +488,10 @@ services:
       # learn the full cluster layout.
       - KAFKA_BROKER=kafka:29092,kafka-2:29092,kafka-3:29092
       - REDIS_URL=redis://redis:6379
+      # Sentinel wins over the URL above. Kept side by side so a
+      # single-Redis deployment still works unchanged.
+      - REDIS_SENTINELS=${REDIS_SENTINELS:-redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379}
+      - REDIS_MASTER_NAME=${REDIS_MASTER_NAME:-mymaster}
       # Escalations are written to the immutable audit log (§5).
       - AUDIT_URL=http://audit-service:8019/audit
       # §5 default is one hour. Short values are for demonstrating recovery
@@ -524,6 +540,10 @@ services:
       # retries, which is the storm this component absorbs.
       - PAYMENT_DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/payment_ledger_db
       - REDIS_URL=redis://redis:6379
+      # Sentinel wins over the URL above. Kept side by side so a
+      # single-Redis deployment still works unchanged.
+      - REDIS_SENTINELS=${REDIS_SENTINELS:-redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379}
+      - REDIS_MASTER_NAME=${REDIS_MASTER_NAME:-mymaster}
       # Rule 8: no fallback. A webhook handler without a signing secret accepts
       # anything that reaches it, so compose refuses to start rather than
       # substituting a default committed to the repository.

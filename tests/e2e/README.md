@@ -48,11 +48,13 @@ E2E_URL_CATALOG_SERVICE=http://catalog.internal:8080 python tests/e2e/run_suite.
 
 ## What runs in CI
 
-`test_07_cart_cache_coherence` and `test_08_rate_limit_state_loss` run on every
-push, in `.github/workflows/stack-tests.yml`, alongside the concurrency and
-storage checks in `tests/integration`. That workflow boots a seven-container
-slice — postgres, redis, minio, cart-service, inventory-service, api-gateway,
-audit-service — which is everything those tests touch.
+`test_07_cart_cache_coherence`, `test_08_rate_limit_state_loss` and
+`test_10_redis_failover` run on every push, in
+`.github/workflows/stack-tests.yml`, alongside the concurrency and storage
+checks in `tests/integration`. That workflow boots an eleven-container slice —
+postgres, the Redis primary/replica/sentinel set, minio, cart-service,
+inventory-service, api-gateway, audit-service — which is everything those tests
+touch.
 
 `test_01` through `test_06` and `test_09` are **manual**. The first six drive
 the CQRS pipeline (Debezium → Kafka → Elasticsearch) and the saga, so trimming
@@ -62,11 +64,17 @@ brokers plus ZooKeeper — and stops one of them mid-run. The full stack is 36
 containers including seven JVMs and wants roughly 8 GB, while a GitHub-hosted
 standard runner on a private repository is 2 cores and 8 GB.
 
-`test_09` is also the one test that is deliberately **not** portable: it stops
-and starts brokers by container name, so it only runs against compose. The
-Kubernetes dev cluster runs a single broker on purpose (see
-`infrastructure/k8s/dev-infra/kafka.yaml`), which means there is nothing there
-for it to assert.
+`test_09` and `test_10` are the two that are deliberately **not** portable:
+they stop and start infrastructure by container name, so they only run against
+compose. The Kubernetes dev cluster runs a single broker on purpose (see
+`infrastructure/k8s/dev-infra/kafka.yaml`), so there is nothing there for
+`test_09` to assert.
+
+Both leave the topology in its post-failure state rather than restoring the
+original roles — the Kafka ISR heals on its own, and Redis stays on the
+promoted node because sentinel does not fail back. Both are valid steady states
+and both are re-runnable: each discovers the current primary rather than
+assuming it.
 
 Two ways to automate the rest, if it becomes worth it:
 

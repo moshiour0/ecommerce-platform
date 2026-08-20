@@ -208,7 +208,55 @@ External PSP webhooks must pass this exact sequence:
 
 ## 5. Event Mesh & Reliability Rules
 
-### 5.0 Broker replication (implemented)
+### 5.0 Redis availability (implemented)
+
+Primary + replica + three sentinels, quorum two. Clients connect **through the
+sentinels**, never to a hostname.
+
+The thing being bought is failover time, not durability. Everything the
+platform keeps in Redis has a durable counterpart — carts are in Postgres,
+webhook dedup has `processed_webhooks` behind it, rate-limit budgets are
+short-lived by design — and test_07 and test_08 prove losing the data is
+survivable. What is not survivable is Redis being *unreachable*.
+
+That is also why a bare replica would have been close to worthless: promoting
+one by hand is the same outage with extra steps.
+
+| Piece | Why it is that number |
+|---|---|
+| 3 sentinels | one can die and the rest still form a majority |
+| quorum 2 | a quorum of 1 lets a sentinel that merely lost the network promote a replica while the real primary still takes writes |
+| `master_for`, never `slave_for` | replication is async; a replica read can serve an emptied cart, or a rate-limit counter one increment behind — the second is a budget bypass |
+
+**Sentinel must monitor an address, not a hostname, under Docker.** This cost a
+full test run to find, and is the kind of failure the whole test tier exists
+for: three healthy sentinels, a linked replica, and no promotion.
+
+```
+sentinel-1 | # Failed to resolve hostname 'redis'
+sentinel-1 | # +tilt #tilt mode entered
+```
+
+With `resolve-hostnames yes`, sentinel re-resolves the monitored name while
+checking on it. Docker's embedded DNS deletes a container's record the instant
+the container dies — so the very event sentinel exists to react to is the event
+that makes the name unresolvable. The failed lookup blocks its event loop long
+enough to trip the TILT watchdog, and **a sentinel in TILT mode does not fail
+over**. `docker/redis-sentinel.sh` resolves once at startup and monitors the
+address.
+
+**Node standardised on ioredis.** node-redis v4, which api-gateway used, has no
+Sentinel support; websocket-gateway was already on ioredis. This removed a
+Redis client rather than adding one. `rate-limit-redis` is client-agnostic —
+it takes a `sendCommand` function.
+
+Verified by `tests/e2e/test_10_redis_failover.py`, which kills the primary and
+asserts the promotion happens (~6–9s observed), the cart survives, writes
+resume, and the old primary rejoins as a replica rather than a second primary.
+It discovers which container is primary rather than assuming, because sentinel
+does not fail back.
+
+### 5.0b Broker replication (implemented)
 
 Three brokers, `replication.factor=3`, `min.insync.replicas=2`, `acks=all`.
 Each of those four is load-bearing and the set is not separable:

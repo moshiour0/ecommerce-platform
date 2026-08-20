@@ -42,7 +42,7 @@ is best read as working-but-unproven.
 
 ## Running it
 
-Requires Docker with about 8 GB available. The stack is 36 containers, seven of
+Requires Docker with about 8 GB available. The stack is 41 containers, seven of
 them JVMs (three Kafka brokers, ZooKeeper, Schema Registry, Debezium,
 Elasticsearch), so it does not comfortably share a machine with anything large.
 
@@ -53,6 +53,7 @@ python scripts/bootstrap_schema.py
 python scripts/bootstrap_storage.py
 python fix_connectors.py
 python scripts/kafka_replication.py
+python scripts/check_redis.py
 ```
 
 `make init` does all of the above in the right order, waits included — if you
@@ -63,6 +64,12 @@ that already exist, so connectors must be registered after the schema.
 non-zero if any is below three. Adding brokers does not replicate topics that
 already exist — they keep the assignment they were created with — so `--fix`
 reassigns them. Run it after any change to the broker count.
+
+`check_redis.py` reports whether the Redis primary really has a linked
+replica and whether the sentinels can still agree to fail over. It asks the
+sentinels which node is primary rather than assuming, because sentinel does
+not fail back — after a promotion the container named `redis` is the replica,
+and that is a valid steady state.
 
 `bootstrap_storage.py` creates the media bucket and applies its access policy.
 The policy is not written by hand — it is generated from the purpose taxonomy
@@ -106,11 +113,11 @@ Three tiers, deliberately separated by what they need to run.
 
 | Tier | What it proves | Needs | Count |
 |---|---|---|---|
-| `tests/unit` | Decisions, against fake inputs and fake clocks | nothing | 517 |
+| `tests/unit` | Decisions, against fake inputs and fake clocks | nothing | 539 |
 | `services/api-gateway/test` | Rate limit tiering and exemptions | nothing | 24 |
-| `shared/libs/node-common/test` | Read-model field ownership, Node side | nothing | 18 |
+| `shared/libs/node-common/test` | Read-model ownership and Redis topology | nothing | 28 |
 | `tests/integration` | Behaviour under real parallel load | running stack | 5 |
-| `tests/e2e` | The platform end to end | running stack | 9 |
+| `tests/e2e` | The platform end to end | running stack | 10 |
 
 ```bash
 python -m pytest tests/unit -q
@@ -143,15 +150,18 @@ Two workflows, in [.github/workflows](.github/workflows):
 
 - **CI** — all three dependency-free tiers (Python units, the gateway's, and the
   shared Node library's), on every push and pull request. ~15 seconds.
-- **Stack tests** — boots a seven-container slice (postgres, redis, minio,
-  cart-service, inventory-service, api-gateway, audit-service) and runs the
-  two state-loss e2e tests, all four concurrency checks, and the object
-  storage policy check. ~2m.
+- **Stack tests** — boots an eleven-container slice (postgres, the Redis
+  primary/replica/sentinel set, minio, cart-service, inventory-service,
+  api-gateway, audit-service) and runs the three state-loss and failover e2e
+  tests, all four concurrency checks, and the object storage policy check.
+  ~3m.
 
 `test_01` through `test_06` and `test_09` are not in CI. They drive the CQRS
 pipeline, the saga, and the Kafka layer, so they need most of the platform, and
 a GitHub-hosted runner on a private repository is 2 cores and 8 GB. Run them by
-hand after touching those paths.
+hand after touching those paths. `test_10` does run in CI: the Redis topology
+is small enough to boot, and the failure it guards against is invisible until
+the moment a primary dies.
 
 ## How a checkout flows
 

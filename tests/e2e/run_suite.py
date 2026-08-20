@@ -31,10 +31,14 @@ TESTS = [
     "test_06_intra_mesh_connectivity",
     "test_07_cart_cache_coherence",
     "test_08_rate_limit_state_loss",
-    # Last on purpose: it stops a broker. It puts it back, and waits for the
-    # ISR to heal before finishing, but running it earlier would have every
-    # test after it sharing a cluster mid-recovery.
+    # Last on purpose: these two stop infrastructure. Both put it back and
+    # wait for recovery before finishing, but running either earlier would
+    # have every test after it sharing a cluster mid-repair.
     "test_09_broker_loss",
+    # Leaves the promoted Redis node as primary, which is a valid steady
+    # state -- sentinel does not fail back. Everything that reads Redis goes
+    # through the sentinels, so nothing downstream cares which node it is.
+    "test_10_redis_failover",
 ]
 
 

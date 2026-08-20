@@ -1,6 +1,6 @@
 const rateLimit = require('express-rate-limit');
 const { RedisStore } = require('rate-limit-redis');
-const { createClient } = require('redis');
+const { createRedisClient, describeConnection } = require('node-common/redis_client');
 const logger = require('../utils/logger');
 const {
   WINDOW_MS,
@@ -14,15 +14,15 @@ const {
 // security posture depends on. A rate limiter backed by per-replica memory is
 // not a rate limiter at scale — it is an N-times-larger budget for an attacker.
 // Consistent with auth.js: refuse to start rather than run degraded.
-const REDIS_URL = process.env.REDIS_URL;
-if (!REDIS_URL) {
-  throw new Error(
-    'FATAL: REDIS_URL environment variable is not set. ' +
-    'The rate limiter requires a shared store; refusing to start with per-replica memory.'
-  );
-}
-
-const redisClient = createClient({ url: REDIS_URL });
+// Sentinel when REDIS_SENTINELS is set, a direct URL otherwise. createRedisClient
+// throws when neither is configured, which is the same refusal this file has
+// always made -- a limiter backed by per-replica memory is not a limiter, it is
+// an N-times-larger budget for an attacker.
+//
+// Sentinel matters more here than anywhere else in the platform. Carts fall
+// back to Postgres when Redis goes; the limiter has no durable counterpart, so
+// an unreachable Redis is the difference between enforcing a budget and not.
+const redisClient = createRedisClient(process.env);
 
 redisClient.on('error', (err) => {
   // Do NOT fall back to MemoryStore here. Silent degradation to per-replica
@@ -30,11 +30,14 @@ redisClient.on('error', (err) => {
   logger.error(`Rate limiter Redis error: ${err.message}`);
 });
 
-// Connect eagerly. node-redis queues commands issued while a connect() is
-// in flight, so middleware registered below is safe to reference the client.
+// ioredis connects on construction and queues commands issued before the
+// connection is up, so middleware registered below is safe to reference the
+// client immediately. The promise is kept for callers that want to wait --
+// and it resolves again after a failover, because ioredis reconnects to
+// whichever node the sentinels promoted.
 const redisReady = redisClient
-  .connect()
-  .then(() => logger.info(`Rate limiter connected to shared Redis store at ${REDIS_URL}`))
+  .ping()
+  .then(() => logger.info(`Rate limiter connected to shared Redis store: ${describeConnection(process.env)}`))
   .catch((err) => {
     logger.error(`FATAL: rate limiter could not reach Redis: ${err.message}`);
     throw err;
@@ -55,7 +58,9 @@ const rateLimitConfig = {
 // smallest one (20/min) across every endpoint.
 function tierStore(prefix) {
   return new RedisStore({
-    sendCommand: (...args) => redisClient.sendCommand(args),
+    // ioredis spells this `call`, node-redis spelled it `sendCommand`.
+    // rate-limit-redis only cares that it returns a promise.
+    sendCommand: (...args) => redisClient.call(...args),
     prefix
   });
 }

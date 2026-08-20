@@ -130,6 +130,20 @@ metadata:
     app: redis
     tier: infra
 spec:
+  # DELIBERATELY ONE INSTANCE, and not the target architecture. Compose runs a
+  # primary, a replica and three sentinels, and every client is sentinel-aware
+  # (see ARCHITECTURE_STATE_FINAL.md §5.0). Nothing here fails over: losing
+  # this pod means carts serve from Postgres and the rate limiter stops
+  # answering until it restarts.
+  #
+  # Services deployed against this cluster must therefore be given an empty
+  # REDIS_SENTINELS so they fall back to REDIS_URL. redis_topology prefers the
+  # sentinel list whenever it is non-empty, so leaving the compose default in
+  # place would point them at sentinels that do not exist here.
+  #
+  # Making this real needs a StatefulSet plus a sentinel Deployment, or a
+  # managed Redis. Left undone rather than done untested, same as the Kafka
+  # manifest next door.
   replicas: 1
   strategy:
     type: Recreate

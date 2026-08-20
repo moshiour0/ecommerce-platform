@@ -1,4 +1,4 @@
-.PHONY: up down init bootstrap connectors verify logs clean env test-gateway rate-limit-check
+.PHONY: up down init bootstrap storage connectors replication redis-check verify logs clean env test-gateway rate-limit-check
 
 COMPOSE = docker compose -f docker-compose.yml -f docker-compose.apps.yml
 
@@ -36,6 +36,7 @@ init: env
 	$(MAKE) storage
 	$(MAKE) connectors
 	$(MAKE) replication
+	$(MAKE) redis-check
 	@echo ""
 	@echo "Platform up. Run 'make verify' to prove it works."
 
@@ -58,6 +59,11 @@ connectors:
 replication:
 	python scripts/kafka_replication.py --fix
 
+# Replication and sentinel quorum for Redis. Reports only -- there is nothing
+# safe to repair automatically here; a broken pair needs a person.
+redis-check:
+	python scripts/check_redis.py
+
 # ---------------------------------------------------------------------------
 # verification
 # ---------------------------------------------------------------------------
@@ -68,7 +74,7 @@ verify:
 		         test_03_saga_orchestrator test_04_full_checkout_flow \
 		         test_05_auxiliary_services test_06_intra_mesh_connectivity \
 		         test_07_cart_cache_coherence test_08_rate_limit_state_loss \
-		         test_09_broker_loss; do \
+		         test_09_broker_loss test_10_redis_failover; do \
 			if python $$t.py >/dev/null 2>&1; then \
 				echo "  PASS  $$t"; pass=$$((pass+1)); \
 			else \
@@ -107,8 +113,10 @@ logs:
 	$(COMPOSE) logs -f
 
 # DESTRUCTIVE: -v deletes ecommerce-platform_postgres_data, redis_data and
-# every other volume. All order, payment and catalog data is gone and is not
-# recoverable, along with every live cart and rate-limit counter.
+# every other volume -- now including the Kafka broker logs, the MinIO
+# bucket and the Redis replica. All order, payment and catalog data is gone
+# and is not recoverable, along with every live cart, rate-limit counter,
+# uploaded media object and retained event.
 # .env is deliberately NOT removed: it is gitignored and holds the generated
 # JWT_SECRET, and regenerating it invalidates every issued token.
 clean:

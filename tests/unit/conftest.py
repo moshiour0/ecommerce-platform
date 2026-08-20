@@ -129,3 +129,8 @@ kafka_replication = load_module(
     "kafka_replication_under_test",
     "shared/libs/python-common/kafka_replication.py",
 )
+
+redis_topology = load_module(
+    "redis_topology_under_test",
+    "shared/libs/python-common/redis_topology.py",
+)

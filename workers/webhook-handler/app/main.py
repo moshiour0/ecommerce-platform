@@ -29,7 +29,7 @@ import time
 
 from fastapi import FastAPI, Header, Request, Response
 from pythonjsonlogger import jsonlogger
-from redis.asyncio import Redis
+from python_common import redis_topology
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -57,10 +57,22 @@ DATABASE_URL = os.getenv(
     "PAYMENT_DATABASE_URL",
     "postgresql+asyncpg://admin:supersecret@postgres:5432/payment_ledger_db")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
+# Layer 2 of the four-layer dedup (§4) lives in Redis. Losing it is safe --
+# layer 3 is a Postgres unique index and catches anything layer 2 misses --
+# but an unreachable Redis puts every webhook on the slow path, which is
+# exactly when a PSP is retrying hardest.
+REDIS_SENTINELS = os.getenv("REDIS_SENTINELS")
+REDIS_MASTER_NAME = os.getenv("REDIS_MASTER_NAME", "mymaster")
 
 engine = create_async_engine(DATABASE_URL, echo=False, pool_size=10, max_overflow=5)
 async_session = async_sessionmaker(engine, expire_on_commit=False)
-redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
+redis_client = redis_topology.make_client(
+    redis_url=REDIS_URL,
+    sentinel_hosts=REDIS_SENTINELS,
+    master_name=REDIS_MASTER_NAME,
+    use_asyncio=True,
+    decode_responses=True,
+)
 
 app = FastAPI(title="Webhook Handler")
 

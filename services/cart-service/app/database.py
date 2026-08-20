@@ -1,4 +1,4 @@
-import redis.asyncio as aioredis
+from python_common import redis_topology
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import declarative_base
 
@@ -27,6 +27,13 @@ async def get_db():
 # without a rebuild -- the same drift es_client.py already records fixing.
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
+# Sentinel when REDIS_SENTINELS is set, the URL otherwise. The cart cache is
+# the workload with the most to gain: losing Redis does not lose a cart --
+# Postgres has it, and test_07 proves the fallback -- but an unreachable Redis
+# means every cart read takes the slow path for as long as the outage lasts.
+REDIS_SENTINELS = os.getenv("REDIS_SENTINELS")
+REDIS_MASTER_NAME = os.getenv("REDIS_MASTER_NAME", "mymaster")
+
 # Retry a dropped connection rather than turning it into a 500.
 #
 # Redis restarts close every pooled connection, and the first command on each
@@ -38,8 +45,14 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 # health_check_interval is the other half: it pings a connection that has been
 # idle longer than the interval before handing it out, so a stale one is found
 # by the pool rather than by a customer.
-redis_client = aioredis.from_url(
-    REDIS_URL,
+# The retry policy below is unchanged and still load-bearing; make_client
+# applies exactly these defaults, and now also covers the seconds during a
+# failover when the sentinels are electing and promoting.
+redis_client = redis_topology.make_client(
+    redis_url=REDIS_URL,
+    sentinel_hosts=REDIS_SENTINELS,
+    master_name=REDIS_MASTER_NAME,
+    use_asyncio=True,
     decode_responses=True,
     retry=Retry(ExponentialBackoff(cap=1.0, base=0.05), retries=3),
     retry_on_error=[ConnectionError, TimeoutError],

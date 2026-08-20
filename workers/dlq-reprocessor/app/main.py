@@ -32,7 +32,7 @@ import os
 import threading
 import time
 
-import redis
+from python_common import redis_topology
 import requests
 from confluent_kafka import Consumer, KafkaError, Producer
 from fastapi import FastAPI
@@ -59,6 +59,12 @@ logger = logging.getLogger(__name__)
 # like the broker dropped the message rather than like a configuration error.
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:29092")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
+# Retry counters, so a poison message cannot be retried forever. These have
+# no durable counterpart: losing them resets every message's retry count to
+# zero, which is the one Redis workload here where a failover is worth more
+# than a restart.
+REDIS_SENTINELS = os.getenv("REDIS_SENTINELS")
+REDIS_MASTER_NAME = os.getenv("REDIS_MASTER_NAME", "mymaster")
 AUDIT_URL = os.getenv("AUDIT_URL", "http://audit-service:8019/audit")
 BACKOFF_SECONDS = int(os.getenv("DLQ_BACKOFF_SECONDS", DEFAULT_BACKOFF_SECONDS))
 POLL_TIMEOUT = float(os.getenv("POLL_TIMEOUT_SECONDS", "5"))
@@ -218,7 +224,12 @@ def consume_forever():
         "acks": "all",
         "enable.idempotence": True,
     })
-    rds = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+    rds = redis_topology.make_client(
+        redis_url=REDIS_URL,
+        sentinel_hosts=REDIS_SENTINELS,
+        master_name=REDIS_MASTER_NAME,
+        decode_responses=True,
+    )
     audit_session = requests.Session()
 
     logger.info("dlq-reprocessor watching ^dlq.* (backoff %ss, max %s retries)",
