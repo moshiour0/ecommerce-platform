@@ -7,8 +7,10 @@ from fastapi import HTTPException
 from ..models import Product, OutboxMessage, IdempotencyKey
 from ..schemas import ProductCreate
 from .catalog_rules import (
-    PLATFORM_SELLER_ID, InvalidSku, build_product_event, normalize_sku,
+    PLATFORM_SELLER_ID, InvalidSku, build_product_event, decide_listing,
+    normalize_sku,
 )
+from .seller_client import fetch_permission
 
 async def create_product(db: AsyncSession, product_in: ProductCreate, idempotency_key: str) -> Product:
     # Check idempotency
@@ -24,12 +26,28 @@ async def create_product(db: AsyncSession, product_in: ProductCreate, idempotenc
         await db.rollback()
         raise HTTPException(status_code=422, detail=str(e))
 
+    # May this seller list at all? seller-service owns the answer
+    # (ARCHITECTURE_STATE_FINAL.md §3e); catalog asks and obeys.
+    #
+    # Before the product is built, so a refused seller leaves nothing behind --
+    # not a row, not an outbox message, not an event that a read model would
+    # index for a shop that is suspended.
+    seller_id = product_in.seller_id or uuid.UUID(PLATFORM_SELLER_ID)
+    permission, unreachable = await fetch_permission(seller_id)
+    decision = decide_listing(permission, unreachable)
+    if not decision.ok:
+        await db.rollback()
+        raise HTTPException(status_code=decision.http_status,
+                            detail=decision.detail)
+
     # Create Product
     product_id = uuid.uuid4()
     product = Product(
         id=product_id,
-        # Defaults to the platform seller until seller-service exists.
-        seller_id=product_in.seller_id or uuid.UUID(PLATFORM_SELLER_ID),
+        # Checked against seller-service above; the platform seller is a real
+        # row in seller_db (migration 015), so it goes through the same gate
+        # as any other seller rather than around it.
+        seller_id=seller_id,
         category_id=product_in.category_id,
         sku=sku,
         name=product_in.name,

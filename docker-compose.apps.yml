@@ -161,6 +161,9 @@ services:
       - "8005:8005"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/catalog_db
+      # Every product create asks whether the seller may list. Behind a
+      # circuit breaker, and it fails closed -- see seller_client.py.
+      - SELLER_SERVICE_URL=http://seller-service:8020
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8005" ]
 

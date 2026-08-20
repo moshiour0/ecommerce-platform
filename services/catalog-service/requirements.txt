@@ -9,3 +9,5 @@ opentelemetry-instrumentation-fastapi==0.40b0
 python-json-logger==2.0.7
 opentelemetry-sdk==1.19.0
 opentelemetry-exporter-otlp-proto-http==1.19.0
+# Calling seller-service to check listing permission (Rule 11 breaker).
+httpx==0.25.0

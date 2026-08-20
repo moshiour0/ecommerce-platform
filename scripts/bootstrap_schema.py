@@ -81,6 +81,7 @@ MIGRATIONS = [
     ("012_catalog_db_seller_id.sql", ["catalog_db"]),
     ("013_media_db_asset_purpose.sql", ["media_meta_db"]),
     ("014_seller_db_onboarding.sql", ["seller_db"]),
+    ("015_seller_db_platform_seller.sql", ["seller_db"]),
 ]
 
 LEDGER_DDL = """

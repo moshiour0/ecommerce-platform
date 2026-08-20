@@ -557,10 +557,14 @@ D1-D3 are answered (§8). Seller onboarding landed on 2026-08-21:
 `seller-service` on port 8020 with the state machine from §3.1, KYC documents
 held as references to confidential media assets, and versioned contracts.
 
-Two things it deliberately does not do yet, both named in
-ARCHITECTURE_STATE_FINAL.md §4b: catalog-service does not yet refuse listings
-from sellers who may not sell, and there is no `bff-seller`. The COD order
-path is the other half of the near-term product work.
+Enforcement followed the same day: `catalog-service` refuses a listing from a
+seller who may not sell, synchronously and failing closed
+(ARCHITECTURE_STATE_FINAL.md §3e). Onboarding now decides something.
+
+Still open, and named so they are not mistaken for done: enforcement is on
+creation only, so a seller suspended after listing keeps their existing
+products live; and there is no `bff-seller`. Next is splitting orders per
+seller, then the COD order path — see ARCHITECTURE_STATE_FINAL.md §3d and §7.
 
 ---
 

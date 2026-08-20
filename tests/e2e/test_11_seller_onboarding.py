@@ -13,11 +13,16 @@ accepting the contract before review, approving a review nobody started,
 submitting half the documents, resubmitting after a ban. Every one of those
 has to be refused by the service, not merely by the rules module.
 
-The last section is the one that matters for the rest of the platform. Every
-transition must leave exactly one outbox row, because catalog-service will
-eventually refuse listings from sellers who may not sell, and it will learn
-who those are from these events. A state change that emits nothing is a seller
-who is suspended here and still selling everywhere else.
+Section 9 is the one that matters for the rest of the platform:
+catalog-service must actually refuse a listing from a seller who may not sell.
+Without it the whole state machine is bookkeeping -- onboarding deciding a
+status nothing consults. It drives a second, fresh seller through the
+lifecycle rather than reusing the one above, which is banned by then and would
+be refused for the wrong reason.
+
+Section 10 asserts every transition left exactly one outbox row. A state
+change that emits nothing is a seller suspended here and still selling
+everywhere else.
 
 media-service is optional. seller-service holds KYC documents as opaque media
 ids and never calls media-service -- Rule 1, and the reason products.seller_id
@@ -71,6 +76,23 @@ def register_document(owner_id, doc_type, filename, content_type):
         "filename": filename, "content_type": content_type, "size_bytes": 2048,
     }, {"Idempotency-Key": str(uuid.uuid4())})
     return body if status == 201 else None
+
+
+async def first_category_id():
+    """Any category id from catalog_db, or None if catalog is not in play.
+
+    Products require a category, and creating one here would mean this test
+    owned catalog data. Reading an existing id keeps it a reader.
+    """
+    try:
+        conn = await asyncpg.connect(db_url("catalog_db"))
+    except Exception:                            # noqa: BLE001 - optional dep
+        return None
+    try:
+        row = await conn.fetchrow("SELECT id FROM categories LIMIT 1")
+        return str(row["id"]) if row else None
+    finally:
+        await conn.close()
 
 
 async def main():
@@ -254,7 +276,79 @@ async def main():
     check(code == 409, "a ban cannot be reinstated",
           f"a banned seller was reinstated: HTTP {code}")
 
-    print("\n9. Checking every transition left an event...")
+    print("\n9. Checking catalog-service obeys the seller's status...")
+    # The point of the whole state machine. Without this, onboarding decides a
+    # status nothing consults, and a suspended seller keeps listing.
+    #
+    # A fresh seller is driven through the lifecycle again, because the one
+    # above is banned by now and every attempt would be refused for the same
+    # reason whatever catalog does -- which would pass without proving
+    # anything.
+    catalog = service_url("catalog-service")
+    category_id = await first_category_id()
+
+    if category_id is None:
+        print("      catalog-service not reachable, or no category to file a "
+              "product under; skipping the enforcement checks")
+    else:
+        _, subject = call(SELLER_URL, "POST", {
+            "legal_name": "Enforcement Ltd",
+            "display_name": f"Enforcement {uuid.uuid4().hex[:6]}",
+            "contact_email": "enforce@example.com",
+        }, {"Idempotency-Key": str(uuid.uuid4())})
+        subject_id = subject["id"]
+
+        def try_listing(name):
+            code, body = call(f"{catalog}/products/", "POST", {
+                "seller_id": subject_id,
+                "sku": f"SKU-{uuid.uuid4().hex[:8].upper()}",
+                "name": name, "description": "e2e", "price_cents": 9900,
+                "category_id": category_id, "is_active": True,
+            }, {"Idempotency-Key": str(uuid.uuid4())})
+            return code, str(body.get("detail", ""))
+
+        code, detail = try_listing("registered")
+        check(code == 403,
+              "a registered seller cannot list (403)",
+              f"a registered seller listed a product: HTTP {code} {detail[:120]}")
+
+        call(f"{SELLER_URL}/{subject_id}/documents", "POST",
+             {"documents": documents})
+        call(f"{SELLER_URL}/{subject_id}/review", "POST")
+        call(f"{SELLER_URL}/{subject_id}/review/result", "POST", {"approved": True})
+
+        code, detail = try_listing("approved")
+        check(code == 403,
+              "an approved seller still cannot list before the contract (403)",
+              f"an approved seller listed before accepting the contract: "
+              f"HTTP {code} {detail[:120]}")
+
+        call(f"{SELLER_URL}/{subject_id}/contract", "POST",
+             {"version": current["current_contract_version"]})
+        code, detail = try_listing("active")
+        check(code == 201,
+              "an active seller can list (201)",
+              f"an active seller was refused: HTTP {code} {detail[:200]}")
+
+        call(f"{SELLER_URL}/{subject_id}/suspend", "POST",
+             {"reason": "counterfeit report"})
+        code, detail = try_listing("suspended")
+        check(code == 403,
+              "a suspended seller is refused immediately (403)",
+              f"a suspended seller listed a product: HTTP {code} {detail[:120]}")
+
+        code, detail = call(f"{catalog}/products/", "POST", {
+            "seller_id": str(uuid.uuid4()),
+            "sku": f"SKU-{uuid.uuid4().hex[:8].upper()}",
+            "name": "ghost", "description": "e2e", "price_cents": 100,
+            "category_id": category_id, "is_active": True,
+        }, {"Idempotency-Key": str(uuid.uuid4())})
+        check(code == 404,
+              "an unknown seller is 404, distinct from a refusal",
+              f"an unknown seller returned {code}; a typo'd id and a suspended "
+              f"shop must not look the same to a client")
+
+    print("\n10. Checking every transition left an event...")
     # Rule 3. catalog-service will learn who may sell from these; a transition
     # that emits nothing is a seller suspended here and still selling
     # everywhere else.

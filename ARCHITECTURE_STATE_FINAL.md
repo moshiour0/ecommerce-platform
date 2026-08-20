@@ -363,18 +363,39 @@ SellerApproved    SellerRejected            SellerActivated
 SellerSuspended   SellerReinstated          SellerBanned
 ```
 
-**Not yet done, and named so it is not mistaken for done:** catalog-service
-does not consult any of this. A suspended seller's existing listings stay up
-and a new listing is still accepted, because product creation never asks. The
-seam is `GET /sellers/{id}/permission`, deliberately narrow. Two ways to close
-it, and the choice is real: a synchronous call behind a circuit breaker
-(simple, couples catalog's availability to this service) or a local projection
-in catalog fed by the events above (eventually consistent, so a just-suspended
-seller can list for a second or two). The projection is the usual marketplace
-answer.
+**Enforcement (implemented).** `catalog-service` refuses a product from a
+seller who may not sell. It asks `GET /sellers/{id}/permission` — deliberately
+narrow, so catalog receives neither a rejection reason nor an address — and
+obeys the answer. It does not re-derive the rule from a status string, because
+two services deriving "may this seller sell" is two services that will
+eventually disagree, and the one that disagrees quietly keeps selling.
+
+Synchronous, behind a Rule 11 circuit breaker, and **failing closed**. The
+alternative was a local projection in catalog fed by the events above, which
+wins on availability and loses on correctness — it is eventually consistent,
+so a seller suspended for counterfeits keeps listing for as long as the lag
+lasts. Creating a product is a cold path: no buyer request touches
+seller-service, so refusing listings for the minutes it is down costs a retry,
+while accepting them costs exactly the control.
+
+Three refusals, three statuses, because they are three different instructions
+to the caller — `403` will never succeed and must not be retried, `404` is a
+bad id, `503` should be retried shortly. The check runs *before* the product
+is built, so a refused listing leaves no row, no outbox message and nothing
+for a read model to index.
+
+The platform sentinel seller from migration 012 is now a real, active row in
+`seller_db` (migration 015) rather than an exemption. A special-case id that
+skips verification is the shape of thing that later gets reused for
+"internal" listings and then for whatever else is inconvenient to onboard.
+
+**Still not done, and named so it is not mistaken for done:** enforcement is
+on *creation* only. A seller suspended after listing keeps their existing
+products live — taking them down is a separate decision (§7 step 9 onward),
+because it is a bulk state change with its own reversal, not a check.
 
 `bff-seller` — the seller dashboard of orders, inventory, payouts and metrics
-— is also not built. Sellers must not reach internal services directly.
+— is not built. Sellers must not reach internal services directly.
 
 ## 4. Webhook Deduplication Strategy (4-Layers)
 External PSP webhooks must pass this exact sequence:
@@ -506,10 +527,11 @@ list:**
 
 **Next, in this order:**
 
-8. **Enforce seller permission on listing.** `catalog-service` must refuse a
-   product from a seller who may not sell. Without it §3e is bookkeeping —
-   onboarding decides a status nothing consults. This is the smallest step
-   that makes the seller lifecycle real.
+8. ~~**Enforce seller permission on listing.**~~ ✅ done 2026-08-21.
+   `catalog-service` refuses a product from a seller who may not sell,
+   synchronously and failing closed (§3e). Enforcement is on creation only;
+   taking an existing catalogue down when a seller is suspended is part of
+   step 9's per-seller work.
 9. **Split orders per seller.** The `SellerOrder` aggregate in §3d. Every
    later step — courier assignment, payout, RTO, seller metrics — is per
    seller and cannot be expressed against a single flat order.
