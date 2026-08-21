@@ -420,6 +420,24 @@ async def transition_seller_order(db: AsyncSession, order_id, seller_order_id,
         },
     ))
 
+    # Delivery is when the platform starts owing the seller money. The
+    # liability is booked then rather than at payout, because a number computed
+    # at payout time by summing orders cannot answer what was owed last week or
+    # why it disagrees with the orders (§3d).
+    if action == "deliver":
+        db.add(OutboxMessage(
+            aggregate_type="SellerOrder",
+            aggregate_id=str(seller_order.id),
+            type="BookEscrowDeliveryCommand",
+            payload={
+                "order_id": str(order_id),
+                "seller_order_id": str(seller_order.id),
+                "seller_id": str(seller_order.seller_id),
+                "collected_cents": seller_order.subtotal_cents,
+                "currency": seller_order.currency,
+            },
+        ))
+
     command = _EFFECT_COMMANDS.get(decision.effect)
     if command:
         db.add(OutboxMessage(

@@ -166,3 +166,8 @@ courier_rules = load_module(
     "courier_rules_under_test",
     "services/fulfillment-service/app/services/courier_rules.py",
 )
+
+ledger_rules = load_module(
+    "ledger_rules_under_test",
+    "services/payment-service/app/services/ledger_rules.py",
+)

@@ -2,7 +2,7 @@ import logging
 from fastapi import FastAPI
 from pythonjsonlogger import jsonlogger
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from .routes import payments
+from .routes import payments, escrow
 from python_common.retention import start_outbox_cleanup
 from .database import engine
 from python_common.tracing import setup_tracing
@@ -22,6 +22,7 @@ app = FastAPI(title="Payment Service")
 
 # Include routes
 app.include_router(payments.router)
+app.include_router(escrow.router)
 
 # Instrument FastAPI with OpenTelemetry
 # Rule 6: install a real TracerProvider before instrumenting. Without it

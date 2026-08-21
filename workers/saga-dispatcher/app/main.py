@@ -71,6 +71,9 @@ ORDER_DB_URL = os.getenv("ORDER_DATABASE_URL", "postgresql://admin:supersecret@p
 SAGA_URL = os.getenv("SAGA_URL", "http://order-saga:8012/orders")
 INVENTORY_URL = os.getenv("INVENTORY_URL", "http://inventory-service:8013/inventory")
 PAYMENT_URL = os.getenv("PAYMENT_URL", "http://payment-service:8015/payments")
+# The escrow ledger is a different router on the same service, and
+# PAYMENT_URL already carries the /payments prefix.
+PAYMENT_BASE_URL = PAYMENT_URL.rsplit("/payments", 1)[0]
 
 POLL_INTERVAL = float(os.getenv("DISPATCH_POLL_SECONDS", "2"))
 BATCH_SIZE = int(os.getenv("DISPATCH_BATCH_SIZE", "20"))
@@ -339,6 +342,24 @@ async def handle(msg_id, msg_type: str, payload: dict) -> bool:
         logger.error(f"Seller order inventory {endpoint} failed: "
                      f"order={order_id} status={res.status_code}")
         return False  # never abandon an outstanding stock movement
+
+    if msg_type == "BookEscrowDeliveryCommand":
+        # Seller-order scoped, so it must not advance the parent saga.
+        # payment-service is idempotent on (seller_order_id, reason): this is
+        # delivered at least once and couriers resend on top of that, and a
+        # second booking would credit the seller twice for one parcel.
+        res = await _post("payment-service", f"{PAYMENT_BASE_URL}/escrow/delivery",
+                          {"seller_id": payload.get("seller_id"),
+                           "seller_order_id": payload.get("seller_order_id"),
+                           "collected_cents": payload.get("collected_cents"),
+                           "currency": payload.get("currency", "BDT")}, idem)
+        if res.status_code == 200:
+            logger.info(f"escrow booked for seller order "
+                        f"{payload.get('seller_order_id')}")
+            return True
+        logger.error(f"Escrow booking failed: order={order_id} "
+                     f"status={res.status_code} {res.text[:200]}")
+        return False  # never abandon an unbooked liability
 
     if msg_type == "ConfirmOrderCommand":
         return await _advance_saga(order_id, "OrderCompleted", f"ord-cmp-{msg_id}")

@@ -576,12 +576,16 @@ Couriers followed: one internal contract, provider status words mapped from
 config rather than code, and remittance files reconciled row by row rather than
 believed (ARCHITECTURE_STATE_FINAL.md §3d).
 
-Still open, and named so they are not mistaken for done: no real courier is
-configured — Pathao, Steadfast and RedX each need a mapping written from their
-own API docs, and only the manual/spreadsheet courier ships; listing
-enforcement is on creation only, so a seller suspended afterwards keeps their
-existing products live; refusal-risk scoring is not built; and there is no
-`bff-seller`. Next is the escrow ledger — see §7 steps 12–13.
+The escrow ledger followed: double-entry, balanced on every write, booking what
+each seller is owed from the moment a courier collects rather than computing it
+at payout time (ARCHITECTURE_STATE_FINAL.md §3d).
+
+Still open, and named so they are not mistaken for done: nothing executes a
+payout — the ledger records one and clears the liability, but the rails and the
+bank details do not exist; no real courier is configured, so only the
+manual/spreadsheet provider ships; listing enforcement is on creation only;
+and refusal-risk scoring is not built. Next is `bff-seller`, so a seller can
+see any of this without reaching internal services — see §7 step 13.
 
 ---
 

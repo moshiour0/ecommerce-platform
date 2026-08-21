@@ -36,3 +36,47 @@ class PaymentResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class EscrowDeliveryRequest(BaseModel):
+    """The courier collected at the door.
+
+    `collected_cents` is what was actually taken, not what the order says. The
+    two should agree and reconciliation exists for when they do not, but the
+    ledger records what happened.
+    """
+    seller_id: UUID
+    seller_order_id: UUID
+    collected_cents: int
+    currency: str = "BDT"
+
+
+class EscrowSettlementRequest(BaseModel):
+    seller_id: UUID
+    seller_order_id: UUID
+    remitted_cents: int
+    currency: str = "BDT"
+
+
+class PayoutRequest(BaseModel):
+    seller_id: UUID
+    amount_cents: int
+    currency: str = "BDT"
+
+
+class LedgerTransactionResponse(BaseModel):
+    transaction_id: UUID
+    reason: str
+    entries: int
+    seller_owed_delta: int
+    detail: str = ""
+
+
+class SellerBalanceResponse(BaseModel):
+    seller_id: UUID
+    # Positive means the platform owes the seller. The double-entry sign is
+    # flipped here into ordinary language, because this is the number a seller
+    # asks for and a payout run needs.
+    owed_cents: int
+    currency: str = "BDT"
+    entries: int

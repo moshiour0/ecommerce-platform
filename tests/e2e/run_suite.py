@@ -43,6 +43,9 @@ TESTS = [
     # After test_13: it drives the same lifecycle from a courier callback
     # rather than from the API, and seeds its own stock either way.
     "test_14_courier_and_settlement",
+    # After test_14: it books the ledger from a delivery driven through
+    # the API, and onboards its own sellers so it shares no fixtures.
+    "test_15_escrow_ledger",
     # Last on purpose: these two stop infrastructure. Both put it back and
     # wait for recovery before finishing, but running either earlier would
     # have every test after it sharing a cluster mid-repair.

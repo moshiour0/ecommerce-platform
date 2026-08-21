@@ -23,7 +23,7 @@ from ..schemas import (
     ReviewResultRequest, SellerRegisterRequest, SellerResponse,
 )
 from .seller_rules import (
-    CURRENT_CONTRACT_VERSION, Decision, Outcome, SellerStatus,
+    CURRENT_CONTRACT_VERSION, commission_bps, Decision, Outcome, SellerStatus,
     may_list_products, may_receive_orders, missing_documents,
     needs_contract_acceptance, plan_ban, plan_contract_acceptance,
     plan_document_submission, plan_registration, plan_reinstatement,
@@ -345,3 +345,35 @@ async def list_sellers(db: AsyncSession, status: str = None, limit: int = 50):
         by_seller.setdefault(seller_id, []).append(document_type)
 
     return [to_response(s, by_seller.get(s.id, [])) for s in sellers]
+
+
+async def get_commission(db: AsyncSession, seller_id: uuid.UUID) -> dict:
+    """The commission rate this seller actually accepted.
+
+    Read by payment-service when it books escrow at delivery. The rate comes
+    from the seller's *accepted* contract version rather than the current one,
+    so raising the platform's rate does not silently reprice orders placed by
+    sellers who never agreed to it -- they have to accept the new version
+    first, and may_list_products already stops them selling until they do.
+
+    A seller who has accepted nothing has no rate, and that is reported rather
+    than defaulted: booking a commission against a contract nobody signed is
+    exactly the kind of number that survives until a seller disputes it.
+    """
+    seller = await _load(db, seller_id)
+    version = seller.accepted_contract_version
+    rate = commission_bps(version)
+
+    if rate is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"seller {seller_id} has no commission rate: accepted "
+                   f"contract version is {version!r}. Nothing may be booked "
+                   f"against a contract that cannot be produced.")
+
+    return {
+        "seller_id": seller.id,
+        "accepted_contract_version": version,
+        "current_contract_version": CURRENT_CONTRACT_VERSION,
+        "commission_bps": rate,
+    }

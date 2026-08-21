@@ -89,6 +89,40 @@ REQUIRED_DOCUMENTS: Set[DocumentType] = {
 # is behind this one must accept again before listing anything further.
 CURRENT_CONTRACT_VERSION = 1
 
+# What the platform takes, per contract version, in basis points. 1200 is 12%.
+#
+# Basis points rather than a percentage held as a float: Rule 6 forbids binary
+# floating point for money, and a commission rate is the one input where a
+# rounding artefact becomes a fraction of a unit somebody is short.
+#
+# Keyed by version, and every version stays here forever. A seller who accepted
+# version 1 is owed version 1's rate on every order placed under it, and
+# deleting the row when version 2 ships would silently reprice history. That is
+# also why the escrow ledger records the rate it used on every entry
+# (payment-service ledger_rules): the ledger is the evidence, and it has to
+# stand on its own.
+#
+# One flat rate per version today. Per-category rates are the obvious next
+# shape -- the roadmap's §3.1 asks for them -- and they belong here as a
+# mapping from category to bps within a version, not as a second source of
+# truth somewhere else.
+COMMISSION_BPS_BY_VERSION = {
+    1: 1200,
+}
+
+
+def commission_bps(version) -> Optional[int]:
+    """The commission rate for a contract version, or None if unknown.
+
+    None rather than a default. A version this service has never heard of must
+    not be priced at whatever the current rate happens to be -- that would book
+    money against a contract nobody can produce.
+    """
+    if version is None:
+        return None
+    return COMMISSION_BPS_BY_VERSION.get(version)
+
+
 # Outbox event types. Names are a contract with every consumer, above all
 # audit-service, and with catalog-service once it starts refusing listings
 # from sellers who may not sell.

@@ -11,7 +11,8 @@ from ..schemas import (
     SellerResponse,
 )
 from ..services.seller_service import (
-    accept_contract, ban_seller, get_permission, get_seller, list_sellers,
+    accept_contract, ban_seller, get_commission, get_permission, get_seller,
+    list_sellers,
     record_review_result, register_seller, reinstate_seller, start_review,
     submit_documents, suspend_seller,
 )
@@ -99,3 +100,12 @@ async def reinstate_endpoint(seller_id: uuid.UUID,
 async def ban_endpoint(seller_id: uuid.UUID, request: ReasonRequest,
                        db: AsyncSession = Depends(get_db)):
     return await ban_seller(db, seller_id, request)
+
+
+# What payment-service books commission at. Separate from /permission, which is
+# deliberately narrow: catalog asking whether a seller may list has no business
+# learning what the platform charges them.
+@router.get("/{seller_id}/commission", status_code=200)
+async def commission_endpoint(seller_id: uuid.UUID,
+                              db: AsyncSession = Depends(get_db)):
+    return await get_commission(db, seller_id)

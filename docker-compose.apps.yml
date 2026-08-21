@@ -310,6 +310,9 @@ services:
       - "8015:8015"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/payment_ledger_db
+      # The escrow ledger reads the seller's accepted commission rate at
+      # delivery. Fails closed: no rate, no booking.
+      - SELLER_SERVICE_URL=http://seller-service:8020
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8015" ]
 

@@ -27,12 +27,12 @@ Role Directive: You are "Anti-Gravity", a Principal Distributed Systems Architec
     `infrastructure/k8s/services` is currently empty. Verify before assuming.
 *   Current Priority: the marketplace path. Seller permission is enforced on
     listing, orders split per seller, the COD lifecycle runs from confirmation
-    to settlement with its stock movements, and couriers sit behind one
-    contract with their remittances reconciled (§3d, §3e). Next is the escrow
-    ledger — `SETTLED` records that a courier remitted, but nothing yet
-    records what the platform owes the seller. The single-tenant order loop
-    (saga, compensation, consumer idempotency) is closed and proven by
-    `tests/e2e`.
+    to settlement, couriers sit behind one contract with their remittances
+    reconciled, and the escrow ledger records what each seller is owed from
+    the moment a courier collects (§3d, §3e). Next is `bff-seller`, so sellers
+    can see any of it without reaching internal services. The single-tenant
+    order loop (saga, compensation, consumer idempotency) is closed and proven
+    by `tests/e2e`.
 
 ## 2. Authoritative Architectural Rules
 1.  Strict Data Isolation: No microservice may share a database. Services default to PostgreSQL, but may use specialized datastores where semantically appropriate (e.g., Redis exclusively for Cart, Elasticsearch for Search). No cross-database queries are permitted.
@@ -115,7 +115,7 @@ Role Directive: You are "Anti-Gravity", a Principal Distributed Systems Architec
 *   fraud-service: Owns risk checks, transaction footprinting, and device compromise vectors (including malicious APK signatures, phishing telemetry, or zero-click attack patterns). Must enforce velocity limits on checkout requests per user/IP/device-fingerprint combination to prevent hoarding.
 
     **Under COD the primary score is refusal risk, not card fraud.** There is no stolen card to detect at checkout, because no card is presented. The loss is a **return-to-origin**: goods dispatched, refused at the door, shipping paid twice and the item restocked or damaged. The signals are different in kind — address completeness and deliverability, prior refusals against this phone number or address, order value against the district's norm, category, and whether the buyer answers the courier's confirmation call. Card-fraud scoring stays for the secondary card path; it is not the default any more.
-*   payment-service: PCI-compliant token handling and intent creation.
+*   payment-service: PCI-compliant token handling and intent creation, and the **escrow ledger** (§3d) — double-entry, append-only, the record of what the platform owes each seller between delivery and payout.
 *   fulfillment-service: Post-checkout ONLY. Owns shipments and the one internal contract every courier sits behind (§3d): status mapping from `config/couriers/*.json`, callback ingestion, and settlement reconciliation. Never per-provider logic outside that mapping.
 *   notification-service: Owns notification state and dispatch (Email/SMS/Push).
 *   seller-service: Seller onboarding, KYC document references, versioned commission contracts, and seller status. **The authority on whether a seller may sell** — see §4b. Owns `seller_db`. Holds no document contents and no payout account numbers.
@@ -298,12 +298,71 @@ therefore per-path, and the COD path's staleness checks are per-state — a
 `CONFIRMED` order that has not been dispatched in 48 hours is a seller
 problem and an alert, not an expiry.
 
-**Escrow, in one line, because it decides the ledger's shape.** Money collected
-by a courier belongs to the seller minus commission, and the platform holds it
-in between. That is a liability, so it is a ledger entry from the moment of
-delivery — not a number computed at payout time from orders. `payment-service`
-owns that ledger; the courier settlement file is reconciled against it, and a
-mismatch is an operational alert rather than a silent adjustment.
+**Escrow (implemented).** Money collected by a courier belongs to the seller
+minus commission, and the platform holds it in between. That is a liability, so
+it is a ledger entry from the moment of delivery — not a number computed at
+payout time from orders. A derived number answers "what do we think we owe" and
+cannot answer "what did we owe last Tuesday", "why does this disagree with the
+orders", or "which of the two is wrong". A ledger answers all three, because
+every change is an entry with a reason attached.
+
+Four accounts, double entry, debits positive:
+
+| Account | | Delivery | Settlement | Payout |
+|---|---|---|---|---|
+| `COURIER_RECEIVABLE` | asset | +collected | −remitted | |
+| `SELLER_PAYABLE` | liability | −(collected−commission) | | +paid |
+| `COMMISSION_REVENUE` | income | −commission | | |
+| `CASH` | asset | | +remitted | −paid |
+
+A transaction balances when its entries sum to zero, and the whole ledger is
+consistent when every entry ever written sums to zero — one query, and the only
+check that matters. `GET /escrow/health` runs it and reports the imbalance as a
+number, because the number is the size of the problem. Unbalanced entry sets
+are refused before they are stored: money appearing from nowhere is worse than
+a rejected request, since the rejection is loud and the imbalance is silent
+until somebody reconciles a bank statement.
+
+**Rounding: one side is computed and the other derived.** `commission = amount
+* rate // 10000` and `seller = amount - commission`. Computing both from the
+rate independently loses or gains a unit whenever the percentage does not
+divide exactly, which is most orders. Deriving the second side makes the
+identity true by construction. Flooring rounds in the seller's favour, which is
+a policy choice and the right way round — a marketplace that rounds fractions
+towards itself is doing something it would not want to explain.
+
+**The rate comes from the contract the seller accepted**, not the current one.
+`seller_rules.COMMISSION_BPS_BY_VERSION` keeps every version forever, because a
+seller who accepted version 1 is owed version 1's rate on every order placed
+under it. Reading it at delivery rather than snapshotting at checkout is safe
+for that reason: the rate only moves when the seller deliberately accepts new
+terms, and `may_list_products` already stops them selling until they do. The
+rate and version used are written onto every entry regardless — the ledger is
+the evidence, and it has to stand on its own.
+
+Booking fails closed. A commission that cannot be established is never
+defaulted to the current rate: money booked against a contract nobody can
+produce is exactly the number that survives until a seller disputes it.
+
+The ledger is **append only**. No update path, no delete path; a correction is
+a new transaction reversing the old one, because a ledger that can be edited is
+one nobody can testify from. Delivery bookings are unique on
+`(seller_order_id, reason, account)`, which makes at-least-once delivery and
+courier resends a no-op rather than a second credit.
+
+Settlement moves money between two platform assets and deliberately does not
+touch what the seller is owed — that was decided at delivery, and a slow
+courier is the platform's problem. Whether a *short* remittance should be
+booked at all is `fulfillment-service`'s reconciliation decision (§3d above);
+hiding a shortfall inside a balanced pair of entries here would be the wrong
+place to catch it.
+
+**Not built:** nothing executes a payout. `POST /escrow/payout` records that
+one happened and clears the liability; actually moving money to a seller's bank
+account needs the payout rails, the account details that onboarding
+deliberately does not store (§3e), and an approval step. A payout run that
+selects which sellers to pay is also absent — the balance query it would be
+built on is there.
 
 **Couriers are an external integration with many providers, behind one
 contract (implemented).** Pathao, Steadfast, RedX, Sundarban and the rest each
@@ -670,8 +729,11 @@ list:**
     2026-08-21, as the contract. Provider mappings are config, and no real
     provider is configured yet — each needs a file written from that
     courier's own API documentation.
-12. **The escrow ledger**, in `payment-service`: money held between delivery
-    and payout is a liability, recorded when it is collected.
+12. ~~**The escrow ledger**, in `payment-service`: money held between delivery
+    and payout is a liability, recorded when it is collected.~~ ✅ done
+    2026-08-21. Double entry, balanced on every write, booked at delivery.
+    Executing a payout is not built — the ledger records one, the rails do
+    not exist.
 13. **`bff-seller`**, the seller dashboard. Sellers must never reach internal
     services directly (Rule 7).
 14. **Ranking**: products and reviews first, then proximity — one pipeline,
