@@ -299,6 +299,7 @@ services:
       - "8012:8012"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/order_db
+      - REVIEWS_SERVICE_URL=http://reviews-service:8022
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8012" ]
 
@@ -431,6 +432,26 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
       - OTEL_SERVICE_NAME=seller-service
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8020" ]
+
+  # Reviews. Port 8022 in the 8021-8029 extension (Rule 2); bff-seller opened
+  # that range at 8021. Depends on order-saga at request time rather than at
+  # boot: a review is refused if the purchase cannot be verified, so the
+  # dependency is enforced in the handler, not by compose ordering.
+  reviews-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/reviews-service
+    ports:
+      - "8022:8022"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/review_db
+      - ORDER_SAGA_URL=http://order-saga:8012
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_SERVICE_NAME=reviews-service
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8022" ]
 
   audit-service:
     <<: *python-service

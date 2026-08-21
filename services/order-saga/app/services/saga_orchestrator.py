@@ -8,6 +8,7 @@ from ..models import OrderLine, SellerOrder, OrderSagaState, OutboxMessage, Idem
 from ..schemas import CreateOrderRequest, SagaEventRequest
 from .transitions import Outcome, resolve
 from .cod_rules import InventoryEffect, plan_transition
+from .reviews_client import fetch_seller_rating
 from .seller_metrics import compute_metrics, quality_inputs
 from .cod_rules import (
     EVENT_CANCELLED, SAGA_STATES_ENDING_THE_ORDER, cancellation_reason,
@@ -604,6 +605,52 @@ def _seller_order_view(seller_order, lines):
     }
 
 
+async def get_purchase(db: AsyncSession, seller_order_id):
+    """The facts needed to decide whether someone may review a purchase.
+
+    Its own endpoint rather than adding `buyer_id` to _seller_order_view,
+    which sellers read through bff-seller. A seller needs a delivery address to
+    ship to; they do not need the buyer's internal user id, and widening a view
+    that is already exposed is how a field ends up somewhere nobody chose to
+    put it.
+
+    Returns only what the eligibility rules consume: whose order it is, whether
+    it arrived, when, and what was in it. Rule 1 -- reviews-service cannot read
+    order_db, so it asks.
+    """
+    result = await db.execute(
+        select(SellerOrder).where(SellerOrder.id == seller_order_id))
+    seller_order = result.scalar_one_or_none()
+    if seller_order is None:
+        raise HTTPException(status_code=404, detail="no such seller order")
+
+    saga = await db.get(OrderSagaState, seller_order.order_id)
+    if saga is None:
+        # The parent is gone but the child is not. Not something a caller can
+        # fix, and answering 404 would tell them the purchase does not exist
+        # when what is true is that the platform disagrees with itself.
+        logger.error(f"Seller order {seller_order_id} has no parent saga "
+                     f"{seller_order.order_id}")
+        raise HTTPException(
+            status_code=409,
+            detail="this order's parent record is missing; it cannot be "
+                   "verified")
+
+    lines = await db.execute(
+        select(OrderLine.product_id)
+        .where(OrderLine.seller_order_id == seller_order.id))
+
+    return {
+        "seller_order_id": str(seller_order.id),
+        "order_id": str(seller_order.order_id),
+        "seller_id": str(seller_order.seller_id),
+        "buyer_id": str(saga.user_id),
+        "status": seller_order.status,
+        "delivered_at": seller_order.delivered_at,
+        "product_ids": [str(row[0]) for row in lines.all()],
+    }
+
+
 async def _lines_for(db: AsyncSession, seller_order_ids):
     """One query for many seller orders' lines, not one per order.
 
@@ -691,10 +738,21 @@ async def seller_performance(db: AsyncSession, seller_id):
     ]
 
     metrics = compute_metrics(seller_orders)
+
+    # The half of quality_boost that was inert until reviews existed. Failing
+    # soft: an unreachable reviews-service returns None for both, which ranking
+    # already treats as average, so an outage degrades to yesterday's correct
+    # behaviour rather than reshuffling every result.
+    ratings = await fetch_seller_rating(seller_id)
+
     return {
         "seller_id": str(seller_id),
         **metrics.as_dict(),
+        "rating": ratings["rating"],
+        "review_count": ratings["review_count"],
         # The exact shape ranking_rules.quality_boost accepts, so a caller
         # never has to reshape it and get the key names subtly wrong.
-        "quality": quality_inputs(metrics),
+        "quality": quality_inputs(metrics,
+                                  rating=ratings["rating"],
+                                  review_count=ratings["review_count"]),
     }

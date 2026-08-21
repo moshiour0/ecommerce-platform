@@ -6,9 +6,7 @@ from ..schemas import (
     SellerOrderActionRequest,
 )
 from ..services.saga_orchestrator import (
-    advance_saga, get_seller_order, get_seller_orders,
-    list_seller_orders, seller_performance, start_saga,
-    transition_seller_order,
+    advance_saga, get_purchase, get_seller_order, get_seller_orders, list_seller_orders, seller_performance, start_saga, transition_seller_order
 )
 import uuid
 
@@ -66,6 +64,14 @@ async def list_seller_orders_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     return await list_seller_orders(db, seller_id, status, limit)
+
+
+# Purchase verification for reviews-service. Declared before the general
+# seller-order route so the literal suffix is not swallowed by it.
+@router.get("/seller-orders/{seller_order_id}/purchase", status_code=200)
+async def get_purchase_endpoint(seller_order_id: uuid.UUID,
+                                db: AsyncSession = Depends(get_db)):
+    return await get_purchase(db, seller_order_id)
 
 
 @router.get("/seller-orders/{seller_order_id}", status_code=200)

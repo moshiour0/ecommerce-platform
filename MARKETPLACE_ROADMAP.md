@@ -595,8 +595,10 @@ is now derived from the requirement — see §3g for the arithmetic.
 Every step of §7 is done. What is left is what each step deliberately did not
 build, and it is worth reading as a list rather than as a footnote:
 
-- **No reviews service.** "Products and reviews first" is currently "products
-  and fulfilment record first". This is the largest gap.
+- ~~**No reviews service.**~~ ✅ done 2026-08-21. `reviews-service` (§3h),
+  verified purchase only, product and seller rated separately. The ranking
+  formula scores on both halves of `quality_boost` for the first time. Not
+  built: text moderation, and any helpfulness or abuse-report signal.
 - **No proximity in the live pipeline.** The decay is implemented and tested;
   seller coordinates are not in the read model.
 - **No payout execution.** The ledger records one and clears the liability;

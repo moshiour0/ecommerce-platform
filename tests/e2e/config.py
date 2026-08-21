@@ -72,6 +72,7 @@ SERVICE_PORTS = {
     "audit-service": 8019,
     # The last slot in Rule 2's 8001-8020 core range.
     "seller-service": 8020,
+    "reviews-service": 8022,
     # 8021 opens Rule 2's extension range; 8001-8020 is full.
     "bff-seller": 8021,
     "saga-dispatcher": 8030,

@@ -55,6 +55,7 @@ SERVICES = {
     "fraud-service":          "fraud_db",
     "payment-service":        "payment_ledger_db",
     "order-saga":             "order_db",
+    "reviews-service":        "review_db",
     "delivery-quote-service": "delivery_quote_db",
     "fulfillment-service":    "fulfillment_db",
     "notification-service":   "notification_db",
@@ -88,6 +89,7 @@ MIGRATIONS = [
     ("018_fulfillment_db_shipments.sql", ["fulfillment_db"]),
     ("019_payment_db_escrow_ledger.sql", ["payment_ledger_db"]),
     ("020_order_db_outbox_retry_state.sql", ["order_db"]),
+    ("021_review_db_reviews.sql", ["review_db"]),
 ]
 
 LEDGER_DDL = """

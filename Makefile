@@ -77,7 +77,7 @@ verify:
 		         test_11_seller_onboarding test_12_order_splitting \
 		         test_13_cod_lifecycle test_14_courier_and_settlement \
 		         test_15_escrow_ledger test_16_seller_dashboard \
-		         test_17_ranking_and_metrics \
+		         test_17_ranking_and_metrics test_18_reviews \
 		         test_09_broker_loss test_10_redis_failover; do \
 			if python $$t.py >/dev/null 2>&1; then \
 				echo "  PASS  $$t"; pass=$$((pass+1)); \

@@ -37,7 +37,7 @@ Role Directive: You are "Anti-Gravity", a Principal Distributed Systems Architec
 
 ## 2. Authoritative Architectural Rules
 1.  Strict Data Isolation: No microservice may share a database. Services default to PostgreSQL, but may use specialized datastores where semantically appropriate (e.g., Redis exclusively for Cart, Elasticsearch for Search). No cross-database queries are permitted.
-2.  Strict Network Isolation: Every backend service must have a strictly unique local port mapping to prevent collisions. **Allocated ranges:** `8000` ingress gateway; `8001-8020` the twenty core services; `8030-8039` workers **`8001-8020` filled up** when seller-service took `8020` on 2026-08-21, so the range is extended: **`8021-8029` is now allocated to core services**, and `bff-seller` opened it at `8021`. That leaves seven slots before the next amendment, and it is the last extension available below `8030-8039` (workers) and `8040-8049` (reserved for Media Center) — a service beyond `8029` needs a new range rather than a nudge. (health and metrics endpoints only — workers expose no business API). The previous single range of `8001-8020` was exactly twenty slots for twenty services with the gateway already occupying `8000`, leaving no allocation for any worker. Workers are first-class deployable units and must be addressable for liveness probes.
+2.  Strict Network Isolation: Every backend service must have a strictly unique local port mapping to prevent collisions. **Allocated ranges:** `8000` ingress gateway; `8001-8020` the twenty core services; `8030-8039` workers **`8001-8020` filled up** when seller-service took `8020` on 2026-08-21, so the range is extended: **`8021-8029` is now allocated to core services**, and `bff-seller` opened it at `8021`, `reviews-service` taking `8022`. That leaves six slots before the next amendment, and it is the last extension available below `8030-8039` (workers) and `8040-8049` (reserved for Media Center) — a service beyond `8029` needs a new range rather than a nudge. (health and metrics endpoints only — workers expose no business API). The previous single range of `8001-8020` was exactly twenty slots for twenty services with the gateway already occupying `8000`, leaving no allocation for any worker. Workers are first-class deployable units and must be addressable for liveness probes.
 3.  Outbox Before Kafka: Application code must never publish business events directly to Kafka. Business state and OutboxMessage records are written in the same atomic PostgreSQL transaction. CDC (Debezium) publishes those events to Kafka.
 4.  Idempotency is Mandatory: All state-mutating APIs require a UUIDv4 Idempotency-Key. Consumers must execute INSERT INTO processed_events ... ON CONFLICT DO NOTHING in the exact same transaction as their business logic. **Idempotency Response Contract:** On idempotency conflict (i.e., the key has been seen before), the service MUST return the previously committed result with its original HTTP status code — never an error. The idempotency guard is a cache, not a gate. Returning HTTP 409 on a legitimate retry is a protocol violation.
 
@@ -689,11 +689,75 @@ model. Passing `None` makes the decay exactly 1.0, the same as an unlocated
 seller, rather than silently ordering by something else. Wiring it is the same
 projection job as the quality signals.
 
-**Not built: reviews.** There is no reviews service, so `rating` and
-`review_count` are reported as `None` and treated as neutral. Inventing an
-average would put a number into the formula that looks like evidence. This is
-the larger of the two gaps: "products and **reviews** first" is currently
-"products and fulfilment record first".
+**Reviews: built.** ~~There is no reviews service.~~ `reviews-service`
+(§3h) now supplies `rating` and `review_count` from verified purchases, and
+`quality_boost` scores on both halves for the first time. An unrated seller
+still reports `None` and is still treated as average — the cold-start rule is
+unchanged, and it is what lets a new seller be found at all.
+
+### 3h. Reviews: verified purchase only (implemented)
+
+`reviews-service` on port 8022, owning `review_db`. It exists to end a gap §3g
+named at the time: the ranking formula reads a rating and a review count that
+no service produced, so they were reported as `None` and treated as neutral.
+Honest — inventing an average would have put a number into the formula that
+looked like evidence — but it left a third of the scoring inert.
+
+**A review requires a delivered seller order containing that product.** Not
+because unverified reviews are always false, but because under COD delivery is
+the one fact the platform already knows for certain, and it is the strongest
+anti-gaming signal available without a fraud model. An open review endpoint is
+a free vote, and free votes get bought.
+
+`DELIVERED` and `SETTLED` qualify — SETTLED is delivery plus the courier having
+remitted, and the money moving later is not the buyer's business.
+
+**`RETURNED` and `RTO_IN_TRANSIT` deliberately do not.** Under COD a refusal
+happens at the door: the buyer never opened the box and has nothing a product
+rating can carry. Their complaint is about the seller or the courier, and a
+return *already* counts against the seller in the fulfilment metrics — letting
+it also land as a one-star product review would penalise one event twice and
+put a rating on an item nobody has tried.
+
+**Product and seller are rated separately**, from one submission. They are
+different claims a single star cannot carry: an excellent product packed badly,
+or a mediocre product from a seller who did everything right. The seller rating
+is nullable — a buyer who only rated the item has not given the seller nought
+stars.
+
+**One review per purchase, not per product.** A buyer who orders the same thing
+again has a second genuine experience of it, and collapsing them would silently
+block anyone restocking a consumable — the buyer whose repeat opinion is worth
+most. Enforced by a unique constraint on `(seller_order_id, product_id)` rather
+than only in the handler, because two concurrent submissions both pass an
+application-level count.
+
+**The shrinking happens in ranking, and only there.** This is the decision most
+likely to be "corrected" later into a bug, so it is pinned by a test.
+`reviews-service` reports the raw mean and the count;
+`ranking_rules.rating_component` pulls it toward neutral in proportion to how
+few reviews back it. One 4-star review yields a multiplier of 1.0020, two
+hundred yield 1.0390. If both modules shrank, a small sample would be pulled
+toward average twice and the ranking would be quietly flatter than either
+claims — and neither would look wrong on its own.
+
+**The ratings lookup fails soft**, deliberately the opposite of the listing
+check in §3e. A listing check that fails open lets a suspended seller sell, so
+it fails closed. A ratings lookup that failed closed would make every seller
+unrateable during a blip and reshuffle search results; failing soft returns
+`None`, which ranking already treats as average — so an outage degrades to
+exactly the behaviour that was correct yesterday.
+
+Verification is a synchronous call to order-saga's
+`/orders/seller-orders/{id}/purchase` — its own endpoint rather than widening
+`_seller_order_view`, which sellers read through `bff-seller`. A seller needs a
+delivery address; they do not need the buyer's internal user id, and widening an
+exposed view is how a field ends up somewhere nobody chose to put it. That call
+**fails closed**: an unverifiable purchase is refused with 503, because
+otherwise an outage is the way to publish whatever you like.
+
+Still open: nothing moderates review text, and there is no helpfulness or
+abuse-report signal. Both are real and neither is faked.
 
 ## 4. Webhook Deduplication Strategy (4-Layers)
 External PSP webhooks must pass this exact sequence:

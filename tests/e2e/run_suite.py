@@ -52,6 +52,7 @@ TESTS = [
     # Drives sixteen order lifecycles to build two real fulfilment
     # records, so it is the slowest in the suite by some way.
     "test_17_ranking_and_metrics",
+    "test_18_reviews",
     # Last on purpose: these two stop infrastructure. Both put it back and
     # wait for recovery before finishing, but running either earlier would
     # have every test after it sharing a cluster mid-repair.
