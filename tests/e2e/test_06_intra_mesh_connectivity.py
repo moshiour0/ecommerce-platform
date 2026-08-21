@@ -1,7 +1,7 @@
 import subprocess
 import sys
 
-from config import internal_url, mesh_exec_prefix, describe
+from config import describe, internal_url, mesh_exec_prefix, run_probe
 
 # Define all 20 services with their internal Docker mesh hostnames and ports
 # Built from the shared port map so this list cannot drift from the platform.
@@ -37,7 +37,7 @@ def check_internal_connectivity():
         # Run wget inside the api-gateway container
         cmd = mesh_exec_prefix("api-gateway") + ["wget", "-qO-", "--timeout=2", target_url]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            result = run_probe(cmd)
             if result.returncode == 0:
                 print(f"      [OK] {name} is reachable from inside the mesh.")
             else:

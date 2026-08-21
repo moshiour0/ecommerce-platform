@@ -336,3 +336,88 @@ def test_the_connect_timeout_is_bounded_by_default():
     """A default of None would reintroduce the hang."""
     assert e2e_config.PG_CONNECT_TIMEOUT is not None
     assert e2e_config.PG_CONNECT_TIMEOUT > 0
+
+
+# ---------------------------------------------------------------------------
+# and the third way in: docker exec
+# ---------------------------------------------------------------------------
+#
+# Five tests reach the platform by shelling out. With Docker healthy, test_06
+# still failed once in a full run and passed alone: five seconds to spawn a
+# process inside a container while twenty others are busy is too tight a
+# budget. A timeout that is wrong is not a machine that is broken.
+
+def _probe(timeouts, returncode=0):
+    """Drive run_probe against a subprocess.run that times out `timeouts` times."""
+    import subprocess
+    calls = {"n": 0}
+
+    class Done:
+        def __init__(self, rc):
+            self.returncode = rc
+            self.stdout = "ok"
+            self.stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls["n"] += 1
+        if calls["n"] <= timeouts:
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 1))
+        return Done(returncode)
+
+    original = subprocess.run
+    subprocess.run = fake_run
+    try:
+        result = e2e_config.run_probe(["docker", "exec", "x", "wget", "-qO-", "u"],
+                                      backoff=0)
+        return result, calls["n"]
+    finally:
+        subprocess.run = original
+
+
+def test_a_slow_probe_is_retried():
+    result, attempts = _probe(timeouts=1)
+    assert result.returncode == 0
+    assert attempts == 2
+
+
+def test_a_probe_that_never_answers_still_fails():
+    import subprocess
+    with pytest.raises(subprocess.TimeoutExpired):
+        _probe(timeouts=99)
+
+
+def test_a_nonzero_exit_is_never_retried():
+    """That is the command answering, and the answer is the point.
+
+    Retrying a failed probe would turn "this service is unreachable" into
+    "this service is unreachable three times", then eventually into a pass if
+    the service flapped -- exactly the lying-suite failure mode.
+    """
+    result, attempts = _probe(timeouts=0, returncode=1)
+    assert result.returncode == 1
+    assert attempts == 1
+
+
+def test_a_healthy_probe_costs_one_call():
+    _, attempts = _probe(timeouts=0)
+    assert attempts == 1
+
+
+def test_the_probe_budget_is_larger_than_the_five_seconds_that_failed():
+    """The original 5s budget is what actually broke test_06 under load."""
+    assert e2e_config.EXEC_TIMEOUT > 5
+
+
+def test_state_changing_commands_do_not_come_through_here():
+    """test_09 kills a broker and test_10 forces a failover.
+
+    Those are the experiment. Silently repeating an experiment is not a retry,
+    it is a different test -- so they must keep calling subprocess directly.
+    """
+    from pathlib import Path as _P
+    root = _P(__file__).resolve().parents[1] / "e2e"
+    for name in ("test_09_broker_loss.py", "test_10_redis_failover.py"):
+        source = (root / name).read_text(encoding="utf-8")
+        assert "run_probe" not in source, (
+            f"{name} performs state-changing docker commands and must not "
+            f"route them through the retrying probe helper")

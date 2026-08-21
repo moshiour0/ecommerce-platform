@@ -381,3 +381,58 @@ async def connect_with_retry(dsn, retries=PG_CONNECT_RETRIES,
                 raise
             await asyncio.sleep(backoff * (2 ** attempt))
     raise last  # unreachable; kept so the contract is explicit
+
+
+# ---------------------------------------------------------------------------
+# and the third way the suite reaches the platform: docker exec
+# ---------------------------------------------------------------------------
+#
+# I argued at first that retries did not belong here -- that a `docker exec`
+# timing out meant the daemon was sick and wrapping it would be hiding a
+# machine problem. That was right about a hung daemon and wrong about this.
+#
+# With Docker healthy, test_06 still failed once in a full run and passed
+# immediately on its own. The budget was five seconds to spawn a process inside
+# a container while twenty others were busy, which is simply too tight. A
+# timeout that is wrong is not a machine that is broken.
+#
+# What makes retrying safe here is what these commands are: probes. `wget` at a
+# health endpoint, `redis-cli ping`, reading a config. They observe and change
+# nothing, so repeating one cannot do anything twice -- the same test that
+# `new_client` applies to GET and `connect_with_retry` applies to connecting.
+#
+# Commands that DO change something -- killing a broker in test_09, forcing a
+# failover in test_10 -- must not come through here. They are the experiment,
+# and silently repeating an experiment is not a retry, it is a different test.
+
+EXEC_TIMEOUT = 20
+EXEC_RETRIES = 2
+EXEC_BACKOFF = 1.0
+
+
+def run_probe(cmd, timeout=EXEC_TIMEOUT, retries=EXEC_RETRIES,
+              backoff=EXEC_BACKOFF):
+    """Run a read-only command, retrying if it times out.
+
+    For probes only -- anything that observes without changing. A command with
+    an effect must be run directly with subprocess so that a slow one fails
+    loudly instead of being quietly repeated.
+
+    Returns the CompletedProcess of the last attempt. A non-zero exit code is
+    returned as-is and never retried: that is the command answering, and the
+    caller is asking precisely because the answer matters.
+    """
+    import subprocess
+    import time
+
+    last = None
+    for attempt in range(retries + 1):
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            last = exc
+            if attempt == retries:
+                raise
+            time.sleep(backoff * (2 ** attempt))
+    raise last  # unreachable; kept so the contract is explicit
