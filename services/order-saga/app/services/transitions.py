@@ -58,6 +58,7 @@ class Outcome(str, Enum):
     LATE_DUPLICATE = "late_duplicate"  # already terminal; ack, do not re-apply
     OUT_OF_ORDER = "out_of_order"      # valid event, not yet applicable; retry
     UNKNOWN_EVENT = "unknown_event"    # never valid; dead-letter it
+    COMPENSATE = "compensate"          # ack; state unchanged; release what is held
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,52 @@ COD_TRANSITIONS: dict[tuple[str, str], tuple[str, Optional[str]]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# resources that arrived after the saga stopped waiting for them
+# ---------------------------------------------------------------------------
+# Deliberately NOT part of TRANSITIONS, because these are not transitions. The
+# saga is already exactly where it belongs; what is new is that something is
+# being held on its behalf and has to be given back.
+#
+# Modelling them as transitions would have made each one a self-loop, and
+# `test_no_transition_is_a_self_loop` is right to forbid those: a state that
+# transitions to itself re-emits its command on every redelivery. Separating
+# the table keeps that invariant intact and says what is actually happening.
+#
+# The race this exists for is ordinary. The reaper times out a saga sitting at
+# PENDING and, seeing no reservation recorded against it, correctly concludes
+# there is nothing to compensate. Meanwhile the reserve the saga never heard
+# about succeeds at inventory-service. The units are now held by an order that
+# can never complete, and the InventoryReserved that would have said so
+# resolved to OUT_OF_ORDER -- retried forever, applied never.
+#
+# Measured on this platform before the fix: twelve sagas at TIMED_OUT, twelve
+# units held, and twelve commands that had been asking about it every few
+# seconds since the orders were created.
+LATE_RESOURCE_COMPENSATIONS: dict[tuple[str, str], str] = {
+    # Reaped before the reservation landed. Give the stock back; the existing
+    # (TIMED_OUT, "InventoryReleased") arm then closes the saga out.
+    (TIMED_OUT, "InventoryReserved"):          "ReleaseInventoryCommand",
+
+    # FAILED is only reachable from INVENTORY_RESERVED, so this is a duplicate
+    # rather than news -- but a duplicate that used to resolve to OUT_OF_ORDER
+    # and spin. /release is keyed by order_id and settles whatever is held, so
+    # re-issuing it is a no-op rather than a double release.
+    (FAILED, "InventoryReserved"):             "ReleaseInventoryCommand",
+
+    # And after a rollback has completed. Terminal, so this would otherwise be
+    # acknowledged as a late duplicate and the units would stay held silently
+    # -- the quietest version of the same leak.
+    (ROLLBACK_COMPLETED, "InventoryReserved"): "ReleaseInventoryCommand",
+}
+
+# ORDER_COMPLETED is deliberately absent from the table above. Under COD a
+# completed saga means "the saga handed off", not "the buyer has the goods":
+# the stock is legitimately held until delivery consumes it or a return
+# releases it (§3d). Releasing there would put goods already on a courier's
+# van back on sale. This is asserted by a test rather than left to the reader.
+
+
 def resolve(current_status: str, event_type: str,
             payment_method: str = "CARD") -> Decision:
     """Decide what an event means for a saga in a given state.
@@ -152,6 +199,13 @@ def resolve(current_status: str, event_type: str,
     if entry is not None:
         new_status, command = entry
         return Decision(Outcome.APPLY, new_status=new_status, command=command)
+
+    # Before the terminal check, on purpose. A resource held on behalf of a
+    # saga that has finished still has to be returned, and answering "late
+    # duplicate" here is what let twelve units sit held indefinitely.
+    command = LATE_RESOURCE_COMPENSATIONS.get((current_status, event_type))
+    if command is not None:
+        return Decision(Outcome.COMPENSATE, new_status=None, command=command)
 
     if current_status in TERMINAL_STATES:
         return Decision(Outcome.LATE_DUPLICATE)

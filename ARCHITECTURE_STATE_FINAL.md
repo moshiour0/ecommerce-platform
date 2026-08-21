@@ -865,6 +865,92 @@ Verified live: on deploy, exactly fourteen commands parked with their 409s
 recorded, the six legitimate bookings behind them completed within one tick, and
 the claimable backlog fell from 45 to 12.
 
+### 5d. What a saga owes when it gives up (implemented)
+
+Two leaks, found by following one stuck queue, and both of the same shape: the
+saga had one-way arrows where it needed two.
+
+**Stock reserved after the saga stopped waiting for it.** The reaper times out
+a saga sitting at PENDING and, seeing no reservation recorded against it,
+correctly concludes there is nothing to compensate. Meanwhile the reserve it
+never heard about succeeds at inventory-service. The units are now held by an
+order that can never complete, and the `InventoryReserved` that would have said
+so resolved to `OUT_OF_ORDER` — retried forever, applied never. Measured: 12
+sagas at TIMED_OUT, 12 units held, 12 commands asking about it every few
+seconds since the orders were created.
+
+This is modelled as a new outcome, `COMPENSATE`, and a table kept deliberately
+**out of** `TRANSITIONS`:
+
+```
+LATE_RESOURCE_COMPENSATIONS = {
+    (TIMED_OUT,          "InventoryReserved"): "ReleaseInventoryCommand",
+    (FAILED,             "InventoryReserved"): "ReleaseInventoryCommand",
+    (ROLLBACK_COMPLETED, "InventoryReserved"): "ReleaseInventoryCommand",
+}
+```
+
+Written as transitions each would be a state pointing at itself, and
+`test_no_transition_is_a_self_loop` is right to forbid those — a self-loop
+re-emits its command on every redelivery. Separating the table keeps that
+invariant intact and says what is actually happening: the saga is already where
+it belongs; what is new is that something is held on its behalf.
+
+It is checked **before** the terminal-state check. Answering "late duplicate"
+there is what let the units sit held silently.
+
+**`ORDER_COMPLETED` is deliberately absent.** Under COD a completed saga means
+"the saga handed off", not "the buyer has the goods" — the stock is
+legitimately held until delivery consumes it or a return releases it (§3d).
+Releasing there would put goods already on a courier's van back on sale.
+
+**Children left waiting by a parent that ended.** The same missing arrow one
+level down. `InventoryReserved` pushed PENDING seller orders forward; nothing
+pushed anything when the saga failed, timed out or rolled back. Measured: 14
+seller orders at PENDING under sagas that had already released their stock and
+reached ROLLBACK_COMPLETED.
+
+Not a stock leak — the units were back — and worse in a quieter way. Every
+seller dashboard showed work waiting for orders that no longer existed, and
+`derive_order_status`, which reports the least advanced child, answered PENDING
+for an order that had definitively ended. A seller could have opened their
+queue and started packing one.
+
+Closed from two places, because two things end a saga:
+
+* `advance_saga` closes them the moment it moves a saga into FAILED or
+  ROLLBACK_COMPLETED — every path that runs through the state machine.
+* A reaper sweep covers TIMED_OUT, which is set in raw SQL and never touches
+  the state machine. A sweep rather than another arm on that CTE: the query
+  already needs its own comments to explain why `RETURNING` yields the wrong
+  status, and a sweep also catches children stranded *before* the fix existed,
+  which a transition hook never would.
+
+FAILED and TIMED_OUT count as ended, not just ROLLBACK_COMPLETED — the children
+must stop looking live the moment the parent gives up, not when compensation
+finishes acknowledging itself minutes later, which is exactly the window in
+which a seller is most likely to look at their queue.
+
+DISPATCHED and beyond are untouchable: a saga cannot undo a van. One found
+under a rolled-back parent is logged as needing a person rather than papered
+over by cancelling something physically in transit.
+
+No per-seller release is emitted, because the parent's own
+`ReleaseInventoryCommand` works by `order_id` and has already settled every
+line. A scoped release behind it would find nothing held, and emitting one
+anyway would put a command on the outbox whose only defence is that it is
+harmless.
+
+The rule lives in `cod_rules` rather than `split_rules`: it is a question about
+the seller-order lifecycle, `cod_rules` already owns that, and it already
+imports `split_rules` — the dependency runs one way.
+`cancellable_child_statuses()` reads straight off `ACTIONS["cancel"]` rather
+than restating it, so the two cannot drift.
+
+Verified live: 12 units recovered and 12 sagas closed at ROLLBACK_COMPLETED;
+14 seller orders closed on the first reaper tick with reasons recorded and 14
+`SellerOrderCancelled` events emitted; live COD work untouched.
+
 ## 6. Observability Rules
 *   Every service must emit structured JSON logs.
 *   Every request should carry an OpenTelemetry correlation ID.

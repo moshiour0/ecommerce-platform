@@ -9,6 +9,10 @@ from ..schemas import CreateOrderRequest, SagaEventRequest
 from .transitions import Outcome, resolve
 from .cod_rules import InventoryEffect, plan_transition
 from .seller_metrics import compute_metrics, quality_inputs
+from .cod_rules import (
+    EVENT_CANCELLED, SAGA_STATES_ENDING_THE_ORDER, cancellation_reason,
+    children_to_cancel,
+)
 from .split_rules import (
     EVENT_SELLER_ORDER_CREATED, SplitError, build_seller_order_event,
     derive_order_status, goods_subtotal_cents, is_order_complete,
@@ -194,7 +198,10 @@ async def advance_saga(db: AsyncSession, order_id: str, request: SagaEventReques
     decision = resolve(current_status, request.event_type,
                        getattr(saga_state, 'payment_method', 'CARD'))
 
-    if decision.outcome is not Outcome.APPLY:
+    # COMPENSATE commits like an APPLY -- it emits a command and must not be
+    # rolled back -- but changes no state. It is grouped here rather than with
+    # the rejections for that reason.
+    if decision.outcome not in (Outcome.APPLY, Outcome.COMPENSATE):
         # Nothing may be committed on a non-transition. Roll back so the
         # idempotency key insert is undone and a retry is still possible; the
         # previous version logged and then committed, which burned the key and
@@ -240,7 +247,21 @@ async def advance_saga(db: AsyncSession, order_id: str, request: SagaEventReques
             )
         )
 
-    saga_state.status = decision.new_status
+    if decision.outcome is Outcome.COMPENSATE:
+        # The saga stays where it is. Something is held on its behalf and the
+        # command below gives it back; moving the status would claim progress
+        # the saga has not made, and for a reaped order there is none to make.
+        logger.warning(
+            f"Late {request.event_type} at state={current_status} for "
+            f"order={order_id}: the saga had stopped waiting for it. Emitting "
+            f"{decision.command} to release what is held.")
+    else:
+        saga_state.status = decision.new_status
+
+    # ...and the other direction, which was missing entirely. A saga that has
+    # given up must not leave its children looking like live work.
+    if decision.outcome is Outcome.APPLY:
+        await cancel_children_of_ended_saga(db, saga_state)
 
     # Carry the reservation down to the seller orders.
     #
@@ -256,7 +277,12 @@ async def advance_saga(db: AsyncSession, order_id: str, request: SagaEventReques
     #
     # Only PENDING children are moved. A seller order that has already been
     # cancelled must not be resurrected by a late InventoryReserved.
-    if request.event_type == "InventoryReserved":
+    # Only on a real transition. A reaped saga receiving a late
+    # InventoryReserved is releasing that stock, not acquiring it, and
+    # advancing its children to INVENTORY_RESERVED would tell a seller to
+    # prepare an order whose stock is on its way back to the shelf.
+    if (request.event_type == "InventoryReserved"
+            and decision.outcome is Outcome.APPLY):
         await db.execute(
             SellerOrder.__table__.update()
             .where(SellerOrder.order_id == saga_state.id)
@@ -292,6 +318,91 @@ async def advance_saga(db: AsyncSession, order_id: str, request: SagaEventReques
         raise HTTPException(status_code=500, detail=str(e))
 
     return saga_state
+
+
+async def cancel_children_of_ended_saga(db: AsyncSession, saga_state) -> int:
+    """Close the seller orders of a saga that will not proceed.
+
+    The saga and its seller orders are two state machines and the arrow between
+    them only ever pointed one way: InventoryReserved pushed PENDING children
+    forward, and nothing pushed anything when the saga failed, timed out or
+    rolled back. Fourteen seller orders were sitting at PENDING under sagas
+    that had already released their stock and reached ROLLBACK_COMPLETED.
+
+    That is not a stock leak -- the units were back -- it is a quieter problem.
+    Every seller dashboard showed work waiting to be done for orders that no
+    longer existed, and derive_order_status, which reports the least advanced
+    child, answered PENDING for an order that had definitively ended.
+
+    No per-seller release is emitted. The parent's own ReleaseInventoryCommand
+    works by order_id and settles every line whoever sells it, so a scoped
+    release behind it would find nothing held; see
+    PARENT_COMPENSATION_RELEASES_STOCK in cod_rules.
+
+    Returns how many children were closed. Caller commits.
+    """
+    status = str(saga_state.status)
+    if status not in SAGA_STATES_ENDING_THE_ORDER:
+        return 0
+
+    result = await db.execute(
+        select(SellerOrder).where(SellerOrder.order_id == saga_state.id)
+        .order_by(SellerOrder.seller_id))
+    children = list(result.scalars().all())
+    if not children:
+        return 0
+
+    indices = children_to_cancel(status, [c.status for c in children])
+
+    # A parcel already on a courier is not cancellable -- a saga cannot undo a
+    # van. Finding one under a rolled-back parent is a real inconsistency, so
+    # say so loudly rather than leave it to be noticed in a ledger later.
+    untouched = [c for i, c in enumerate(children) if i not in set(indices)
+                 and str(c.status) not in ("CANCELLED", "RETURNED", "SETTLED")]
+    for child in untouched:
+        logger.error(
+            f"Seller order {child.id} is at {child.status} under a "
+            f"{status} order {saga_state.id}; it cannot be cancelled from "
+            f"here and needs a person.")
+
+    if not indices:
+        return 0
+
+    reason = cancellation_reason(status)
+    now = datetime.now(timezone.utc)
+
+    for index in indices:
+        child = children[index]
+        lines = await db.execute(
+            select(OrderLine.product_id)
+            .where(OrderLine.seller_order_id == child.id))
+        product_ids = [str(row[0]) for row in lines.all()]
+
+        child.status = "CANCELLED"
+        child.status_reason = reason
+        child.updated_at = now
+
+        db.add(OutboxMessage(
+            aggregate_type="SellerOrder",
+            aggregate_id=str(child.id),
+            type=EVENT_CANCELLED,
+            payload={
+                "order_id": str(saga_state.id),
+                "seller_order_id": str(child.id),
+                "seller_id": str(child.seller_id),
+                "status": "CANCELLED",
+                "status_reason": reason,
+                "subtotal_cents": child.subtotal_cents,
+                "courier_name": child.courier_name,
+                "tracking_code": child.tracking_code,
+                "product_ids": product_ids,
+            },
+        ))
+
+    logger.info(
+        f"Cancelled {len(indices)} seller order(s) under {status} "
+        f"order {saga_state.id}: {reason}")
+    return len(indices)
 
 
 async def get_seller_orders(db: AsyncSession, order_id):

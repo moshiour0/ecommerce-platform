@@ -123,9 +123,93 @@ def test_unknown_event_is_never_retryable():
 
 @pytest.mark.parametrize("state", sorted(TERMINAL_STATES))
 @pytest.mark.parametrize("event", sorted(KNOWN_EVENT_TYPES))
-def test_known_event_at_terminal_state_is_a_late_duplicate(state, event):
-    """Ack it. Erroring here makes a consumer redeliver forever."""
-    assert resolve(state, event).outcome is Outcome.LATE_DUPLICATE
+def test_known_event_at_terminal_state_is_acked_not_retried(state, event):
+    """Ack it. Erroring here makes a consumer redeliver forever.
+
+    Both acking outcomes count. This test used to require LATE_DUPLICATE
+    specifically, and that requirement was hiding a leak: an InventoryReserved
+    arriving at ROLLBACK_COMPLETED was acknowledged as a duplicate while the
+    units it announced stayed held by an order that had already rolled back.
+    Nothing errored, nothing retried, and nothing gave the stock back.
+
+    What matters here is the property the test was written for -- a terminal
+    saga must not make a consumer redeliver forever -- so that is what is
+    asserted now, and the release behaviour is pinned separately below.
+    """
+    assert resolve(state, event).outcome in (
+        Outcome.LATE_DUPLICATE, Outcome.COMPENSATE)
+
+
+# ---------------------------------------------------------------------------
+# resources that arrive after the saga stopped waiting for them
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("state", [TIMED_OUT, FAILED, ROLLBACK_COMPLETED])
+def test_late_reservation_releases_the_stock(state):
+    """The leak this exists for.
+
+    The reaper times out a saga at PENDING and, seeing no reservation recorded
+    against it, correctly concludes there is nothing to compensate. The reserve
+    it never heard about then succeeds. Before this, the InventoryReserved
+    saying so resolved to OUT_OF_ORDER and was retried forever while the units
+    sat held by an order that could never complete.
+    """
+    d = resolve(state, "InventoryReserved")
+    assert d.outcome is Outcome.COMPENSATE
+    assert d.command == "ReleaseInventoryCommand"
+
+
+@pytest.mark.parametrize("state", [TIMED_OUT, FAILED, ROLLBACK_COMPLETED])
+def test_a_late_reservation_never_moves_the_saga(state):
+    """It is not progress. The saga is already where it belongs."""
+    assert resolve(state, "InventoryReserved").new_status is None
+
+
+def test_a_completed_order_does_not_have_its_stock_released():
+    """The dangerous inverse, and the reason this is a table rather than a rule.
+
+    Under COD, ORDER_COMPLETED means "the saga handed off", not "the buyer has
+    the goods" -- the stock stays held until delivery consumes it or a return
+    releases it. Treating a late InventoryReserved here as something to
+    compensate would put goods already on a courier's van back on sale.
+    """
+    d = resolve(ORDER_COMPLETED, "InventoryReserved")
+    assert d.outcome is Outcome.LATE_DUPLICATE
+    assert d.command is None
+
+    d_cod = resolve(ORDER_COMPLETED, "InventoryReserved", "COD")
+    assert d_cod.outcome is Outcome.LATE_DUPLICATE
+    assert d_cod.command is None
+
+
+def test_compensation_is_not_a_transition():
+    """Kept out of TRANSITIONS so the no-self-loop invariant stays true.
+
+    Modelled as transitions these would each be a state pointing at itself,
+    and a self-loop re-emits its command on every redelivery. The separate
+    table is what lets `test_no_transition_is_a_self_loop` keep passing while
+    the compensation still happens.
+    """
+    LATE_RESOURCE_COMPENSATIONS = saga_transitions.LATE_RESOURCE_COMPENSATIONS
+    for (state, event) in LATE_RESOURCE_COMPENSATIONS:
+        assert (state, event) not in TRANSITIONS, (
+            f"{state} + {event} is in both tables; TRANSITIONS wins in "
+            f"resolve() and the compensation would be skipped")
+
+
+def test_a_reaped_saga_can_still_finish_after_a_late_reservation():
+    """Release, then the acknowledgement closes it. The loop must terminate.
+
+    Without the second half a timed-out saga would release its stock and then
+    sit at TIMED_OUT forever, which is the same "cannot settle" bug the
+    TIMED_OUT acknowledgement arms were originally added to fix.
+    """
+    d = resolve(TIMED_OUT, "InventoryReserved")
+    assert d.command == "ReleaseInventoryCommand"
+
+    ack = resolve(TIMED_OUT, "InventoryReleased")
+    assert ack.outcome is Outcome.APPLY
+    assert ack.new_status == ROLLBACK_COMPLETED
 
 
 def test_out_of_order_event_is_retryable_not_lost():

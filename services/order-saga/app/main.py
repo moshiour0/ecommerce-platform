@@ -152,6 +152,85 @@ async def saga_reaper_loop():
                         f"Saga Reaper swept stuck sagas, emitted {len(emitted)} "
                         f"compensating command(s): {summary}"
                     )
+                # Second pass: children left behind by a parent that ended.
+                #
+                # advance_saga closes them the moment it moves a saga into
+                # FAILED or ROLLBACK_COMPLETED, which covers every path that
+                # runs through the state machine. TIMED_OUT does not: it is set
+                # by the UPDATE above, in SQL, and a saga can sit there for the
+                # whole compensation window. A seller looking at their queue in
+                # that window sees live work for an order that has been given
+                # up on.
+                #
+                # It is a sweep rather than another CTE arm on purpose. That
+                # query is already dense enough that its own comments have to
+                # explain why RETURNING yields the wrong status, and this also
+                # has to catch children stranded before the fix existed --
+                # which a trigger on the transition never would.
+                #
+                # No per-seller release is emitted here, for the same reason as
+                # in cancel_children_of_ended_saga: the parent's compensation
+                # works by order_id and has already settled every line.
+                #
+                # DISPATCHED and beyond are deliberately excluded. A saga
+                # cannot undo a van, and cancelling a parcel in transit would
+                # make the record disagree with the physical world.
+                closed = await conn.execute(text("""
+                    WITH stranded AS (
+                        SELECT so.id, so.order_id, so.seller_id,
+                               so.subtotal_cents, so.courier_name,
+                               so.tracking_code, s.status AS saga_status
+                        FROM seller_orders so
+                        JOIN order_saga_states s ON s.id = so.order_id
+                        WHERE s.status IN ('FAILED', 'TIMED_OUT',
+                                           'ROLLBACK_COMPLETED')
+                          AND so.status IN ('PENDING', 'INVENTORY_RESERVED',
+                                            'CONFIRMED')
+                        FOR UPDATE OF so SKIP LOCKED
+                    ),
+                    cancelled AS (
+                        UPDATE seller_orders so
+                        SET status = 'CANCELLED',
+                            status_reason = 'order '
+                                || replace(lower(st.saga_status), '_', ' '),
+                            updated_at = NOW()
+                        FROM stranded st
+                        WHERE so.id = st.id
+                        RETURNING so.id, so.order_id, so.seller_id,
+                                  so.status_reason, so.subtotal_cents,
+                                  so.courier_name, so.tracking_code
+                    )
+                    INSERT INTO outbox_messages
+                        (id, aggregate_type, aggregate_id, type, payload,
+                         created_at)
+                    SELECT
+                        gen_random_uuid(), 'SellerOrder', c.id::text,
+                        'SellerOrderCancelled',
+                        json_build_object(
+                            'order_id', c.order_id::text,
+                            'seller_order_id', c.id::text,
+                            'seller_id', c.seller_id::text,
+                            'status', 'CANCELLED',
+                            'status_reason', c.status_reason,
+                            'subtotal_cents', c.subtotal_cents,
+                            'courier_name', c.courier_name,
+                            'tracking_code', c.tracking_code,
+                            'product_ids', coalesce(
+                                (SELECT json_agg(ol.product_id::text)
+                                 FROM order_lines ol
+                                 WHERE ol.seller_order_id = c.id),
+                                '[]'::json)
+                        ),
+                        NOW()
+                    FROM cancelled c
+                    RETURNING aggregate_id;
+                """))
+                stranded = closed.fetchall()
+                if stranded:
+                    logger.warning(
+                        f"Saga Reaper closed {len(stranded)} seller order(s) "
+                        f"left live under an order that had already ended: "
+                        f"{', '.join(r[0] for r in stranded)}")
         except Exception as e:
             logger.error(f"Saga Reaper encountered an error: {e}")
         await asyncio.sleep(60)

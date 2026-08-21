@@ -26,7 +26,7 @@ goods back on the shelf.
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Set
 
 from .split_rules import SellerOrderStatus
 
@@ -144,6 +144,96 @@ ACTIONS: Dict[str, Dict[SellerOrderStatus, Transition]] = {
             requires_reason=True),
     },
 }
+
+# ---------------------------------------------------------------------------
+# a parent that ends must not leave its children waiting
+# ---------------------------------------------------------------------------
+#
+# The saga and its seller orders are two state machines, and the arrow between
+# them only ever pointed one way. `InventoryReserved` pushed PENDING children
+# to INVENTORY_RESERVED, and nothing pushed anything when the saga failed,
+# timed out or rolled back.
+#
+# Measured on this platform: fourteen seller orders sitting at PENDING under
+# sagas that had already released their stock and reached ROLLBACK_COMPLETED.
+#
+# That is not a stock leak -- the units were back -- and it is worse in a
+# quieter way. Every seller dashboard showed work waiting for orders that no
+# longer existed, and derive_order_status, which reports the least advanced
+# child, answered PENDING for an order that had definitively ended. A seller
+# could have opened their queue and started packing one.
+#
+# This lives in cod_rules rather than split_rules because it is a question
+# about the seller-order lifecycle -- what may still be cancelled -- and
+# cod_rules already owns that. split_rules must not import this module; the
+# dependency runs the other way.
+
+# Saga states from which the buyer's order will not proceed. FAILED and
+# TIMED_OUT are here as well as ROLLBACK_COMPLETED because the children have to
+# stop looking live the moment the parent gives up, not when compensation
+# finishes acknowledging itself minutes later -- which is exactly the window in
+# which a seller is most likely to look at their queue.
+SAGA_STATES_ENDING_THE_ORDER = frozenset({
+    "FAILED", "TIMED_OUT", "ROLLBACK_COMPLETED",
+})
+
+
+def cancellable_child_statuses() -> Set[SellerOrderStatus]:
+    """Which child states a parent-driven cancellation may still touch.
+
+    Read straight off the `cancel` action rather than restated, so the two
+    cannot drift. The day DISPATCHED becomes cancellable there it becomes
+    cancellable here, and the day it does not, this stays honest.
+    """
+    return set(ACTIONS["cancel"])
+
+
+def children_to_cancel(saga_status, child_statuses) -> List[int]:
+    """Indices of the children a parent in `saga_status` should cancel.
+
+    Positions rather than statuses, so the caller can map them back to rows
+    without this module needing to know what a row is.
+
+    A parcel already on a courier is deliberately untouchable: a saga cannot
+    undo a van. Finding a DISPATCHED child under a rolled-back parent is a real
+    inconsistency, and the caller is expected to say so rather than paper over
+    it by cancelling something physically in transit.
+    """
+    if saga_status not in SAGA_STATES_ENDING_THE_ORDER:
+        return []
+
+    cancellable = cancellable_child_statuses()
+    out: List[int] = []
+    for index, status in enumerate(child_statuses):
+        try:
+            resolved = SellerOrderStatus(status)
+        except ValueError:
+            continue  # unknown status: not ours to guess at
+        if resolved in cancellable:
+            out.append(index)
+    return out
+
+
+def cancellation_reason(saga_status: str) -> str:
+    """What to record on a child cancelled because its parent ended.
+
+    Written into status_reason and carried on the event: "CANCELLED" with no
+    reason is the thing a seller opens a support ticket about.
+    """
+    return f"order {saga_status.lower().replace('_', ' ')}"
+
+
+# Whether the parent's own compensation already covers the stock. It does, and
+# that is why a parent-driven cancellation does NOT emit a per-seller release:
+# the saga's ReleaseInventoryCommand works by order_id and settles every line
+# whoever sells it, so a scoped release behind it would find nothing held.
+# Emitting one anyway would put a command on the outbox whose only defence is
+# that it is harmless.
+#
+# The ordinary seller-driven cancel still releases, because there is no parent
+# compensation in that case -- only that one seller is stopping.
+PARENT_COMPENSATION_RELEASES_STOCK = True
+
 
 # Nothing leaves these.
 TERMINAL: Set[SellerOrderStatus] = {S.SETTLED, S.RETURNED, S.CANCELLED}
