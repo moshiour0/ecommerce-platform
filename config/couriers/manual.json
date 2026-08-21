@@ -1,0 +1,27 @@
+{
+  "provider": "manual",
+  "display_name": "Manual / spreadsheet courier",
+  "_comment": [
+    "The fallback courier, and a working worked example of the file format.",
+    "",
+    "Plenty of couriers in this market have no API at all: an operations person",
+    "uploads a spreadsheet, or a rider phones in. Those parcels still need to",
+    "move a seller order, so 'no integration' is itself a provider rather than a",
+    "special case in the code.",
+    "",
+    "The words on the right are what this provider sends. They are matched",
+    "case-insensitively with - and spaces folded to _, so 'Picked Up',",
+    "'picked-up' and 'PICKED_UP' are one entry."
+  ],
+  "statuses": {
+    "PICKUP_PENDING": ["pending", "awaiting_pickup"],
+    "PICKED_UP": ["picked_up", "collected"],
+    "IN_TRANSIT": ["in_transit"],
+    "OUT_FOR_DELIVERY": ["out_for_delivery"],
+    "DELIVERED": ["delivered"],
+    "DELIVERY_FAILED": ["attempt_failed", "not_home"],
+    "RETURNING": ["returning", "rto"],
+    "RETURNED": ["returned"],
+    "CANCELLED": ["cancelled", "canceled"]
+  }
+}

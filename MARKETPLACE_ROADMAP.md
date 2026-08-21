@@ -572,12 +572,16 @@ the stock movements each of those implies. A COD order is no longer charged
 like a card order, and the fifteen-minute saga reaper no longer releases stock
 out from under an order that is on a van.
 
-Still open, and named so they are not mistaken for done: listing enforcement is
-on creation only, so a seller suspended afterwards keeps their existing
-products live; refusal-risk scoring is not built; there is no courier
-integration, so dispatch takes a courier name as free text; and there is no
-`bff-seller`. Next is couriers behind one contract and the escrow ledger — see
-§7 steps 11–13.
+Couriers followed: one internal contract, provider status words mapped from
+config rather than code, and remittance files reconciled row by row rather than
+believed (ARCHITECTURE_STATE_FINAL.md §3d).
+
+Still open, and named so they are not mistaken for done: no real courier is
+configured — Pathao, Steadfast and RedX each need a mapping written from their
+own API docs, and only the manual/spreadsheet courier ships; listing
+enforcement is on creation only, so a seller suspended afterwards keeps their
+existing products live; refusal-risk scoring is not built; and there is no
+`bff-seller`. Next is the escrow ledger — see §7 steps 12–13.
 
 ---
 

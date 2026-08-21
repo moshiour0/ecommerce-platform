@@ -85,6 +85,7 @@ MIGRATIONS = [
     ("015_seller_db_platform_seller.sql", ["seller_db"]),
     ("016_order_db_seller_orders.sql", ["order_db"]),
     ("017_order_db_cod_lifecycle.sql", ["order_db"]),
+    ("018_fulfillment_db_shipments.sql", ["fulfillment_db"]),
 ]
 
 LEDGER_DDL = """

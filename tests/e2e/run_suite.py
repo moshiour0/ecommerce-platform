@@ -40,6 +40,9 @@ TESTS = [
     # Seeds and consumes its own stock, so it neither depends on nor
     # disturbs the inventory the earlier tests arranged.
     "test_13_cod_lifecycle",
+    # After test_13: it drives the same lifecycle from a courier callback
+    # rather than from the API, and seeds its own stock either way.
+    "test_14_courier_and_settlement",
     # Last on purpose: these two stop infrastructure. Both put it back and
     # wait for recovery before finishing, but running either earlier would
     # have every test after it sharing a cluster mid-repair.

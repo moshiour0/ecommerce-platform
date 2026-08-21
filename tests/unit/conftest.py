@@ -161,3 +161,8 @@ cod_rules = _types.ModuleType("cod_rules_under_test")
 exec(compile(_cod_src.replace("from .split_rules import",
                               "from order_saga_services.split_rules import"),
              "cod_rules", "exec"), cod_rules.__dict__)
+
+courier_rules = load_module(
+    "courier_rules_under_test",
+    "services/fulfillment-service/app/services/courier_rules.py",
+)

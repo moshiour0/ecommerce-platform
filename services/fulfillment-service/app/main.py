@@ -2,7 +2,8 @@ import logging
 from fastapi import FastAPI
 from pythonjsonlogger import jsonlogger
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from .routes import dispatch
+from .routes import dispatch, shipments
+from .services import courier_registry
 from python_common.retention import start_outbox_cleanup
 from .database import engine
 from python_common.tracing import setup_tracing
@@ -22,6 +23,7 @@ app = FastAPI(title="Fulfillment Service")
 
 # Include routes
 app.include_router(dispatch.router)
+app.include_router(shipments.router)
 
 # Instrument FastAPI with OpenTelemetry
 # Rule 6: install a real TracerProvider before instrumenting. Without it
@@ -50,3 +52,16 @@ async def shutdown_event():
     task = getattr(app.state, "outbox_cleanup", None)
     if task:
         task.cancel()
+
+
+@app.on_event("startup")
+def load_couriers():
+    """Refuse to start on a broken courier mapping.
+
+    A courier whose file cannot express DELIVERED accepts every callback
+    politely and moves nothing: parcels sit dispatched forever while sellers
+    wait to be paid, and no error appears anywhere. A service that will not
+    start is a short outage during a deploy; one that runs blind is a week of
+    unpaid sellers nobody has noticed.
+    """
+    courier_registry.init()

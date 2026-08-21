@@ -26,11 +26,13 @@ Role Directive: You are "Anti-Gravity", a Principal Distributed Systems Architec
     directories contain substantive logic. Every Kubernetes manifest under
     `infrastructure/k8s/services` is currently empty. Verify before assuming.
 *   Current Priority: the marketplace path. Seller permission is enforced on
-    listing, orders split per seller, and the COD lifecycle runs from
-    confirmation to settlement with its stock movements (§3d, §3e). Next is
-    couriers behind one contract, then the escrow ledger. The single-tenant
-    order loop (saga, compensation, consumer idempotency) is closed and proven
-    by `tests/e2e`.
+    listing, orders split per seller, the COD lifecycle runs from confirmation
+    to settlement with its stock movements, and couriers sit behind one
+    contract with their remittances reconciled (§3d, §3e). Next is the escrow
+    ledger — `SETTLED` records that a courier remitted, but nothing yet
+    records what the platform owes the seller. The single-tenant order loop
+    (saga, compensation, consumer idempotency) is closed and proven by
+    `tests/e2e`.
 
 ## 2. Authoritative Architectural Rules
 1.  Strict Data Isolation: No microservice may share a database. Services default to PostgreSQL, but may use specialized datastores where semantically appropriate (e.g., Redis exclusively for Cart, Elasticsearch for Search). No cross-database queries are permitted.
@@ -114,7 +116,7 @@ Role Directive: You are "Anti-Gravity", a Principal Distributed Systems Architec
 
     **Under COD the primary score is refusal risk, not card fraud.** There is no stolen card to detect at checkout, because no card is presented. The loss is a **return-to-origin**: goods dispatched, refused at the door, shipping paid twice and the item restocked or damaged. The signals are different in kind — address completeness and deliverability, prior refusals against this phone number or address, order value against the district's norm, category, and whether the buyer answers the courier's confirmation call. Card-fraud scoring stays for the secondary card path; it is not the default any more.
 *   payment-service: PCI-compliant token handling and intent creation.
-*   fulfillment-service: Post-checkout ONLY. Generates courier labels, updates tracking.
+*   fulfillment-service: Post-checkout ONLY. Owns shipments and the one internal contract every courier sits behind (§3d): status mapping from `config/couriers/*.json`, callback ingestion, and settlement reconciliation. Never per-provider logic outside that mapping.
 *   notification-service: Owns notification state and dispatch (Email/SMS/Push).
 *   seller-service: Seller onboarding, KYC document references, versioned commission contracts, and seller status. **The authority on whether a seller may sell** — see §4b. Owns `seller_db`. Holds no document contents and no payout account numbers.
 *   media-service: Media upload lifecycle, quarantine, scanning, and metadata.
@@ -303,11 +305,59 @@ delivery — not a number computed at payout time from orders. `payment-service`
 owns that ledger; the courier settlement file is reconciled against it, and a
 mismatch is an operational alert rather than a silent adjustment.
 
-**Couriers are an external integration with many providers.** Pathao,
-Steadfast, RedX, Sundarban and the rest each have their own API, their own
-status vocabulary and their own settlement format. They belong behind one
-internal contract in `fulfillment-service`, exactly as the PSP does behind
-`payment-service` — never with per-provider logic leaking into the saga.
+**Couriers are an external integration with many providers, behind one
+contract (implemented).** Pathao, Steadfast, RedX, Sundarban and the rest each
+have their own API, their own status vocabulary and their own settlement
+format. They sit behind one contract in `fulfillment-service`, exactly as the
+PSP does behind `payment-service` — never with per-provider logic in the saga.
+
+The canonical vocabulary is the platform's and is fixed. Each provider's words
+map onto it from `config/couriers/*.json`, mounted rather than baked into the
+image, so the tenth courier is a file rather than a release. Four canonical
+statuses drive the seller order and the rest are recorded and change nothing:
+
+| Canonical | Drives | Why |
+|---|---|---|
+| `PICKED_UP` | `dispatch` | the seller has handed it over |
+| `DELIVERED` | `deliver` | consumes stock; the buyer paid the courier |
+| `RETURNING` | `mark_rto` | the courier has given up |
+| `RETURNED` | `complete_return` | back on the shelf |
+| `DELIVERY_FAILED` | *nothing* | couriers retry two or three times before giving up; treating the first failure as a return sends stock back for a buyer who was simply out |
+
+**An unknown status is never guessed.** A word the mapping has not been taught
+returns nothing, is stored verbatim on the shipment, flagged, and emitted as
+`ShipmentStatusUnmapped` for a human. Both defaults are worse: `IN_TRANSIT`
+hides a delivery, `DELIVERED` consumes stock on a word nobody has read.
+Couriers add statuses without announcing them, and the first symptom is
+normally a parcel stuck in a state nobody recognises.
+
+**A mapping that cannot see a delivery is refused before it is used.**
+`validate_mapping` requires the four load-bearing statuses, and the service
+refuses to start on a broken file. A courier whose config omits `DELIVERED`
+accepts every callback politely and moves nothing — parcels sit dispatched
+forever while sellers wait to be paid, and no error appears anywhere. A
+service that will not start is a short outage; one that runs blind is a week of
+unpaid sellers nobody has noticed.
+
+**Settlement is reconciled, not believed.** The courier's remittance file is
+the only evidence the platform has that it was paid. Every row is classified —
+matched, short, over, unknown order, not delivered, duplicate, invalid — and
+every row is stored, including the ones that did not reconcile: a rejected row
+that is forgotten is a dispute nobody can reconstruct. Nothing in that path
+adjusts anything, and the variance is not netted across rows, because a file
+short on one order and over on another is two problems rather than a balanced
+one.
+
+A resent batch is a no-op rather than a second payout, enforced by uniqueness
+on `(provider, batch_reference, row_reference)` and by refusing to settle a
+seller order that already has a matched row.
+
+**Not built:** no real provider is configured. `config/couriers/manual.json`
+is the operations-uploads-a-spreadsheet courier, which is a real thing in this
+market and a worked example of the format. Pathao, Steadfast and RedX each
+need a file written from *their* documentation — deliberately absent rather
+than present with plausible-looking values, because a mapping written from
+memory is a guess that will be reviewed as data and trusted as data.
 
 **The split is implemented.** Checkout writes one `Order`, one `SellerOrder`
 per seller and one `order_line` per line (migration 016), and emits one
@@ -615,8 +665,11 @@ list:**
     consumes stock where nothing consumed it before. Refusal-risk scoring in
     `fraud-service` is deliberately left: the signals are known, the model is
     not, and inventing one here would be a guess with a number attached.
-11. **Courier integration behind one contract**, in `fulfillment-service`, and
-    the settlement reconciliation that follows from it.
+11. ~~**Courier integration behind one contract**, in `fulfillment-service`,
+    and the settlement reconciliation that follows from it.~~ ✅ done
+    2026-08-21, as the contract. Provider mappings are config, and no real
+    provider is configured yet — each needs a file written from that
+    courier's own API documentation.
 12. **The escrow ledger**, in `payment-service`: money held between delivery
     and payout is a liability, recorded when it is collected.
 13. **`bff-seller`**, the seller dashboard. Sellers must never reach internal

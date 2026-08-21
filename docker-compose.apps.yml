@@ -320,10 +320,18 @@ services:
       dockerfile: docker/Dockerfile.python
       args:
         SERVICE_PATH: services/fulfillment-service
+    volumes:
+      # Courier status mappings, read at start-up. Mounted rather than baked in
+      # so adding the tenth courier is a file, not a release.
+      - ./config/couriers:/app/config/couriers:ro
     ports:
       - "8016:8016"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/fulfillment_db
+      # A courier callback that means "delivered" drives the seller order, and
+      # order-saga owns that lifecycle.
+      - ORDER_SAGA_URL=http://order-saga:8012
+      - COURIER_CONFIG_DIR=/app/config/couriers
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8016" ]
 
