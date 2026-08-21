@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from ..models import OrderLine, SellerOrder, OrderSagaState, OutboxMessage, IdempotencyKey
 from ..schemas import CreateOrderRequest, SagaEventRequest
 from .transitions import Outcome, resolve
+from .cod_rules import InventoryEffect, plan_transition
 from .split_rules import (
     EVENT_SELLER_ORDER_CREATED, SplitError, build_seller_order_event,
     derive_order_status, goods_subtotal_cents, is_order_complete,
@@ -189,7 +190,8 @@ async def advance_saga(db: AsyncSession, order_id: str, request: SagaEventReques
     # which is the exact opposite of what a late duplicate needs, and it would
     # have retried a terminal saga forever.
     current_status = str(saga_state.status)
-    decision = resolve(current_status, request.event_type)
+    decision = resolve(current_status, request.event_type,
+                       getattr(saga_state, 'payment_method', 'CARD'))
 
     if decision.outcome is not Outcome.APPLY:
         # Nothing may be committed on a non-transition. Roll back so the
@@ -238,6 +240,29 @@ async def advance_saga(db: AsyncSession, order_id: str, request: SagaEventReques
         )
 
     saga_state.status = decision.new_status
+
+    # Carry the reservation down to the seller orders.
+    #
+    # Keyed on the event rather than on the parent's new status: under COD the
+    # parent goes straight from PENDING to ORDER_COMPLETED and never passes
+    # through INVENTORY_RESERVED, so keying on the status would leave every
+    # COD seller order stuck at PENDING -- which is exactly what the first run
+    # of this did.
+    #
+    # The reservation is order-wide today: one ReserveInventoryCommand covers
+    # every line whoever sells it, so every seller order becomes reserved at
+    # the same moment.
+    #
+    # Only PENDING children are moved. A seller order that has already been
+    # cancelled must not be resurrected by a late InventoryReserved.
+    if request.event_type == "InventoryReserved":
+        await db.execute(
+            SellerOrder.__table__.update()
+            .where(SellerOrder.order_id == saga_state.id)
+            .where(SellerOrder.status == "PENDING")
+            .values(status="INVENTORY_RESERVED",
+                    updated_at=datetime.now(timezone.utc))
+        )
 
     outbox_message = None
     if decision.command:
@@ -319,4 +344,110 @@ async def get_seller_orders(db: AsyncSession, order_id):
             }
             for so in seller_orders
         ],
+    }
+
+
+# The inventory command each effect turns into. Emitted through the outbox and
+# executed by saga-dispatcher, never called from here: Rule 3 keeps state and
+# its consequences in one transaction, and a direct HTTP call inside a
+# database transaction is how half-applied transitions happen.
+_EFFECT_COMMANDS = {
+    InventoryEffect.RELEASE: "ReleaseSellerOrderInventoryCommand",
+    InventoryEffect.CONSUME: "ConsumeSellerOrderInventoryCommand",
+}
+
+
+async def transition_seller_order(db: AsyncSession, order_id, seller_order_id,
+                                  action: str, request):
+    """Move one seller order along the COD lifecycle.
+
+    The status change, its event, and any inventory command all commit
+    together. A delivery that consumed stock without recording the delivery --
+    or recorded it without consuming -- would be a warehouse and a database
+    that disagree, and nothing would notice until a stock count.
+    """
+    result = await db.execute(
+        select(SellerOrder)
+        .where(SellerOrder.id == seller_order_id)
+        .where(SellerOrder.order_id == order_id)
+        .with_for_update())
+    seller_order = result.scalar_one_or_none()
+    if seller_order is None:
+        raise HTTPException(status_code=404, detail="Seller order not found")
+
+    reason = (request.reason or "") if request else ""
+    decision = plan_transition(action, seller_order.status, reason)
+    if not decision.ok:
+        await db.rollback()
+        raise HTTPException(status_code=decision.http_status,
+                            detail=decision.detail)
+
+    now = datetime.now(timezone.utc)
+    seller_order.status = decision.to.value
+    seller_order.status_reason = decision.detail or None
+
+    stamp = {"confirm": "confirmed_at", "dispatch": "dispatched_at",
+             "deliver": "delivered_at", "settle": "settled_at"}.get(action)
+    if stamp:
+        setattr(seller_order, stamp, now)
+
+    if action == "dispatch" and request is not None:
+        seller_order.courier_name = request.courier_name
+        seller_order.tracking_code = request.tracking_code
+
+    # Which products this seller order covers. The inventory command is scoped
+    # to them: one seller cancelling must not release another seller's still
+    # live stock out of the same order.
+    lines_result = await db.execute(
+        select(OrderLine.product_id)
+        .where(OrderLine.seller_order_id == seller_order.id))
+    product_ids = [str(row[0]) for row in lines_result.all()]
+
+    db.add(OutboxMessage(
+        aggregate_type="SellerOrder",
+        aggregate_id=str(seller_order.id),
+        type=decision.event,
+        payload={
+            "order_id": str(order_id),
+            "seller_order_id": str(seller_order.id),
+            "seller_id": str(seller_order.seller_id),
+            "status": seller_order.status,
+            "status_reason": seller_order.status_reason,
+            "subtotal_cents": seller_order.subtotal_cents,
+            "courier_name": seller_order.courier_name,
+            "tracking_code": seller_order.tracking_code,
+            "product_ids": product_ids,
+        },
+    ))
+
+    command = _EFFECT_COMMANDS.get(decision.effect)
+    if command:
+        db.add(OutboxMessage(
+            aggregate_type="SellerOrder",
+            aggregate_id=str(seller_order.id),
+            type=command,
+            payload={
+                "order_id": str(order_id),
+                "seller_order_id": str(seller_order.id),
+                "product_ids": product_ids,
+            },
+        ))
+
+    try:
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    logger.info("seller order %s -> %s (%s)", seller_order.id,
+                seller_order.status, decision.effect.value)
+    return {
+        "seller_order_id": str(seller_order.id),
+        "order_id": str(order_id),
+        "seller_id": str(seller_order.seller_id),
+        "status": seller_order.status,
+        "status_reason": seller_order.status_reason,
+        "inventory_effect": decision.effect.value,
+        "courier_name": seller_order.courier_name,
+        "tracking_code": seller_order.tracking_code,
     }

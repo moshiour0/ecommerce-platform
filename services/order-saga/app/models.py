@@ -10,6 +10,12 @@ class OrderSagaState(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     status = Column(String(50), nullable=False, default="PENDING")
+
+    # Which lifecycle this order follows. COD is the primary path for this
+    # market; the reaper reads this so it does not release stock out from
+    # under an order that is on a van for three days (migration 017).
+    payment_method = Column(String(16), nullable=False, default="COD")
+
     total_cents = Column(Integer, nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
@@ -36,6 +42,20 @@ class SellerOrder(Base):
     subtotal_cents = Column(Integer, nullable=False)
     currency = Column(String(3), nullable=False, default="BDT")
     item_count = Column(Integer, nullable=False)
+
+    # When each step happened. updated_at only records the most recent one,
+    # and each of these answers a question something real asks: dispatch to
+    # delivery is a seller metric, delivery to settlement is how long the
+    # platform has been holding somebody else's cash.
+    confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    dispatched_at = Column(DateTime(timezone=True), nullable=True)
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
+    settled_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Free text until there is a courier integration (§7 step 11). Fixing the
+    # shape before reading a real provider's API would be guessing.
+    courier_name = Column(String(64), nullable=True)
+    tracking_code = Column(String(128), nullable=True)
 
     created_at = Column(DateTime(timezone=True),
                         default=lambda: datetime.now(timezone.utc))

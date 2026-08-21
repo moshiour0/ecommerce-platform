@@ -566,10 +566,18 @@ two `SellerOrder`s, with the money conserved and each announced on the outbox
 (ARCHITECTURE_STATE_FINAL.md §3d). Order lines are stored for the first time —
 before this, `order_db` knew a total and not what it was a total of.
 
+The COD lifecycle followed: a seller order now runs from confirmation through
+dispatch, delivery and settlement, or ends as a return or a cancellation, with
+the stock movements each of those implies. A COD order is no longer charged
+like a card order, and the fifteen-minute saga reaper no longer releases stock
+out from under an order that is on a van.
+
 Still open, and named so they are not mistaken for done: listing enforcement is
 on creation only, so a seller suspended afterwards keeps their existing
-products live; nothing advances a seller order past `PENDING`; and there is no
-`bff-seller`. Next is the COD order lifecycle — see §7 steps 10–12.
+products live; refusal-risk scoring is not built; there is no courier
+integration, so dispatch takes a courier name as free text; and there is no
+`bff-seller`. Next is couriers behind one contract and the escrow ledger — see
+§7 steps 11–13.
 
 ---
 

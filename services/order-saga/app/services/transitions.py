@@ -103,16 +103,50 @@ TRANSITIONS: dict[tuple[str, str], tuple[str, Optional[str]]] = {
 }
 
 
-def resolve(current_status: str, event_type: str) -> Decision:
+# Cash on delivery does not charge anything at checkout, so the card table's
+# INVENTORY_RESERVED -> ChargePaymentCommand arm is not merely unnecessary
+# there, it is wrong: it charges a card that was never presented for goods
+# nobody has received.
+#
+# Under COD the saga's own job ends once stock is held. Everything after that
+# -- confirmation, dispatch, delivery, settlement -- happens to the seller
+# orders on a courier's timescale, and the buyer-facing status is derived from
+# them (cod_rules, and ARCHITECTURE_STATE_FINAL.md §3d). So the saga hands off
+# and completes.
+#
+# ORDER_COMPLETED here means "the saga finished its work", not "the buyer has
+# their goods". Those were the same statement for a card order and are days
+# apart for a COD one, which is exactly why the buyer-facing status is not
+# read from this column.
+COD_TRANSITIONS: dict[tuple[str, str], tuple[str, Optional[str]]] = {
+    (PENDING, "InventoryReserved"): (ORDER_COMPLETED, None),
+}
+
+
+def resolve(current_status: str, event_type: str,
+            payment_method: str = "CARD") -> Decision:
     """Decide what an event means for a saga in a given state.
 
     Pure: no I/O, no clock, no randomness. The three non-transition outcomes
     are deliberately distinct because collapsing them is what destroyed events
     -- an unknown type must never be retried forever, an out-of-order event
     must never be acknowledged, and a late duplicate must never be an error.
+
+    `payment_method` selects the forward path. It defaults to CARD so that
+    every existing caller and every existing test keeps the behaviour it was
+    written against; only an order explicitly marked COD takes the other one.
+    The compensation arms are shared, because releasing stock and failing an
+    order mean the same thing however the order was going to be paid for.
     """
     if event_type not in KNOWN_EVENT_TYPES:
         return Decision(Outcome.UNKNOWN_EVENT)
+
+    if payment_method == "COD":
+        entry = COD_TRANSITIONS.get((current_status, event_type))
+        if entry is not None:
+            new_status, command = entry
+            return Decision(Outcome.APPLY, new_status=new_status,
+                            command=command)
 
     entry = TRANSITIONS.get((current_status, event_type))
     if entry is not None:

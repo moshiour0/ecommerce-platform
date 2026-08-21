@@ -26,9 +26,11 @@ Role Directive: You are "Anti-Gravity", a Principal Distributed Systems Architec
     directories contain substantive logic. Every Kubernetes manifest under
     `infrastructure/k8s/services` is currently empty. Verify before assuming.
 *   Current Priority: the marketplace path. Seller permission is enforced on
-    listing and orders split per seller (§3d, §3e); next is the COD order
-    lifecycle, then courier settlement. The single-tenant order loop (saga,
-    compensation, consumer idempotency) is closed and proven by `tests/e2e`.
+    listing, orders split per seller, and the COD lifecycle runs from
+    confirmation to settlement with its stock movements (§3d, §3e). Next is
+    couriers behind one contract, then the escrow ledger. The single-tenant
+    order loop (saga, compensation, consumer idempotency) is closed and proven
+    by `tests/e2e`.
 
 ## 2. Authoritative Architectural Rules
 1.  Strict Data Isolation: No microservice may share a database. Services default to PostgreSQL, but may use specialized datastores where semantically appropriate (e.g., Redis exclusively for Cart, Elasticsearch for Search). No cross-database queries are permitted.
@@ -327,12 +329,54 @@ survivable for a marketplace, where courier collection, payout, commission,
 returns and seller metrics are all per seller and none of them can be answered
 from a total.
 
-**Still not built:** nothing advances a `SellerOrder` past `PENDING`. The COD
-transitions, the courier adapter and the escrow ledger are §7 steps 10–12. The
-saga continues to drive the parent through the card vocabulary in §3
-meanwhile, so the stored parent status and the derived one legitimately differ
-today; `GET /orders/{id}/seller-orders` reports both, labelled, rather than
-reconciling them silently.
+**The lifecycle is implemented.** `POST
+/orders/{id}/seller-orders/{sid}/{action}` drives a seller order through the
+table above — one endpoint per named action rather than a PATCH taking a
+target status, because a caller that can name the destination can name *any*
+destination, and the guard then lives in whatever validates the field.
+
+**A COD order is never charged.** `resolve()` takes the order's payment
+method, and on the COD path `InventoryReserved` completes the saga with no
+command instead of emitting `ChargePaymentCommand`. That arm of the card table
+was not merely unnecessary under COD — it charged a card that was never
+presented, for goods nobody had received. `ORDER_COMPLETED` on a COD saga
+means "the saga finished its work", not "the buyer has their goods"; those are
+the same statement for a card order and days apart for a COD one, which is
+precisely why the buyer-facing status is derived from the seller orders rather
+than read from that column.
+
+**The reaper no longer sweeps COD orders that hold stock.** Fifteen minutes is
+right for a card order, which completes in seconds, and catastrophic for a COD
+one, which holds stock from checkout until delivery — it would release the
+stock out from under an order already on a van, and then the goods arrive, the
+buyer pays a courier, and nothing records that anybody is owed anything. COD
+orders are still swept at `PENDING`, where a reservation that never came back
+really is broken.
+
+**Delivery consumes stock; nothing else does.** This closed a real leak. Before
+it, `reserve` moved units from available to reserved and nothing ever moved
+them out: a delivered order's reservation stayed `held` forever, and
+`quantity_reserved` only grew — 41 units across the platform were held by
+orders that had long since completed. `plan_consume` is the counterpart to
+`plan_release`, and the asymmetry is the whole point:
+
+| Ending | available | reserved | total |
+|---|---|---|---|
+| delivered | unchanged | −N | **falls** — the buyer has the goods |
+| returned | +N | −N | conserved |
+| cancelled | +N | −N | conserved |
+
+A dispatched parcel is still returnable, so it stays reserved. Consuming at
+dispatch would lose everything that comes back; releasing on delivery would
+put sold goods back on sale.
+
+**Still not built:** refusal-risk scoring in `fraud-service` before dispatch.
+The signals are named in §3, but a scoring model invented here would be a
+guess with a number attached. There is no courier adapter either (§7 step 11):
+`courier_name` and `tracking_code` are free text supplied at dispatch, and
+fixing their shape before reading a real provider's API would fix the wrong
+shape. And no escrow ledger (step 12) — `SETTLED` records that a courier
+remitted, but nothing yet records what the platform owes the seller.
 
 Tax, shipping and promotions are **not** allocated across sellers. That
 allocation decides what each seller is paid and what commission is charged on,
@@ -565,9 +609,12 @@ list:**
 9. ~~**Split orders per seller.**~~ ✅ done 2026-08-21. The `SellerOrder`
    aggregate in §3d, plus the order lines that had nowhere to live before it.
    Nothing advances a seller order past `PENDING` yet — that is step 10.
-10. **The COD order path.** The state vocabulary in §3d, the reservation TTL
-    that survives days rather than minutes, and refusal risk in
-    `fraud-service` before dispatch.
+10. ~~**The COD order path.**~~ ✅ done 2026-08-21, except for refusal risk.
+    The state vocabulary in §3d is implemented and driven, the reaper no
+    longer releases stock under an order that is on a van, and delivery
+    consumes stock where nothing consumed it before. Refusal-risk scoring in
+    `fraud-service` is deliberately left: the signals are known, the model is
+    not, and inventing one here would be a guess with a number attached.
 11. **Courier integration behind one contract**, in `fulfillment-service`, and
     the settlement reconciliation that follows from it.
 12. **The escrow ledger**, in `payment-service`: money held between delivery

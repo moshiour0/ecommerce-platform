@@ -9,6 +9,7 @@ from ..models import (
 )
 from ..schemas import ReleaseRequest, ReserveRequest
 from .reservation_rules import (
+    ConsumeOutcome, plan_consume,
     ReleaseOutcome, ReservationOutcome, StockLevel, is_lock_contention,
     plan_release, plan_reservation,
 )
@@ -178,11 +179,18 @@ async def release_inventory(db: AsyncSession, request: ReleaseRequest,
     release that errored on "nothing to release" would strand every saga that
     timed out before reserving.
     """
-    result = await db.execute(
+    query = (
         select(InventoryReservation)
         .where(InventoryReservation.order_id == request.order_id)
         .where(InventoryReservation.status == "held")
     )
+    # Scoped to specific lines when the caller names them. One seller's part of
+    # a split order cancels on its own schedule, and releasing the whole order
+    # would put another seller's live stock back on sale.
+    if getattr(request, "product_ids", None):
+        query = query.where(
+            InventoryReservation.product_id.in_(request.product_ids))
+    result = await db.execute(query)
     holds = list(result.scalars().all())
 
     if not holds:
@@ -257,4 +265,104 @@ async def release_inventory(db: AsyncSession, request: ReleaseRequest,
     logger.info("release: order %s returned %s unit(s) across %s reservation(s)",
                 request.order_id, released_units, len(holds))
     return {"order_id": request.order_id, "released": released_units,
+            "reservations": len(holds), "detail": "; ".join(details)}
+
+
+async def consume_inventory(db: AsyncSession, request, idempotency_key: str) -> dict:
+    """Retire what an order is holding, without returning it to available.
+
+    The counterpart to release, and the asymmetry is the whole point: release
+    conserves the total because the goods are back on a shelf, and consume does
+    not because they are in a customer's hands.
+
+    Nothing ever called this before, so `quantity_reserved` only ever grew.
+    Reserve moved units out of available and held them; nothing moved them out
+    of held. A delivered order's units stayed reserved forever, and the column
+    stopped meaning "committed to open orders".
+
+    Under COD the moment is delivery, not checkout: a dispatched parcel is
+    still returnable and stays held. Idempotent by construction like release --
+    rows are matched on status='held', so a retried courier callback finds
+    nothing and succeeds.
+    """
+    query = (
+        select(InventoryReservation)
+        .where(InventoryReservation.order_id == request.order_id)
+        .where(InventoryReservation.status == "held")
+    )
+    if getattr(request, "product_ids", None):
+        query = query.where(
+            InventoryReservation.product_id.in_(request.product_ids))
+    result = await db.execute(query)
+    holds = list(result.scalars().all())
+
+    if not holds:
+        logger.info("consume: order %s holds nothing", request.order_id)
+        return {"order_id": request.order_id, "consumed": 0, "reservations": 0,
+                "detail": "no live reservation; nothing to consume"}
+
+    consumed_units = 0
+    details = []
+
+    for hold in holds:
+        try:
+            item_result = await db.execute(
+                select(InventoryItem)
+                .where(InventoryItem.product_id == hold.product_id)
+                .with_for_update()
+            )
+        except Exception as exc:
+            if not is_lock_contention(exc):
+                raise
+            await db.rollback()
+            logger.warning("consume: row contended for product=%s", hold.product_id)
+            raise HTTPException(status_code=409,
+                                detail="Inventory row is contended; retry shortly")
+
+        item = item_result.scalar_one_or_none()
+        plan = plan_consume(
+            StockLevel(item.quantity_available, item.quantity_reserved)
+            if item else None,
+            hold.quantity,
+        )
+
+        if plan.outcome is ConsumeOutcome.INVALID:
+            await db.rollback()
+            raise HTTPException(status_code=400, detail=plan.detail)
+
+        if plan.consumed:
+            item.quantity_reserved = plan.new_level.quantity_reserved
+            consumed_units += hold.quantity
+
+            db.add(OutboxMessage(
+                aggregate_type="Inventory",
+                aggregate_id=str(hold.product_id),
+                type=plan.event,
+                payload={
+                    "id": str(item.id),
+                    "order_id": hold.order_id,
+                    "product_id": str(hold.product_id),
+                    "quantity_consumed": hold.quantity,
+                    "total_quantity_available": item.quantity_available,
+                    "total_quantity_reserved": item.quantity_reserved,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            ))
+
+        # Settled either way, for the same reason release settles: a hold
+        # against a product row that no longer exists cannot be retired, and
+        # leaving it 'held' would make every future call retry it forever.
+        hold.status = "consumed"
+        hold.released_at = datetime.now(timezone.utc)
+        details.append(plan.detail)
+
+    try:
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    logger.info("consume: order %s retired %s unit(s) across %s reservation(s)",
+                request.order_id, consumed_units, len(holds))
+    return {"order_id": request.order_id, "consumed": consumed_units,
             "reservations": len(holds), "detail": "; ".join(details)}

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 from datetime import datetime
 
@@ -15,6 +15,26 @@ class ReserveRequest(BaseModel):
 
 class ReleaseRequest(BaseModel):
     order_id: str = Field(..., min_length=1, max_length=255)
+    # Which of the order's lines to act on. Absent means all of them, which is
+    # what the saga reaper wants -- it compensates a whole order blind.
+    #
+    # A marketplace order is split across sellers, and each seller's part
+    # cancels, delivers and returns on its own schedule. Releasing the whole
+    # order because one seller cancelled would put another seller's still-live
+    # stock back on sale.
+    product_ids: Optional[List[str]] = None
+
+
+class ConsumeRequest(BaseModel):
+    order_id: str = Field(..., min_length=1, max_length=255)
+    product_ids: Optional[List[str]] = None
+
+
+class ConsumeResponse(BaseModel):
+    order_id: str
+    consumed: int          # units retired from reserved, not returned
+    reservations: int      # ledger rows settled
+    detail: str
 
 
 class ReleaseResponse(BaseModel):

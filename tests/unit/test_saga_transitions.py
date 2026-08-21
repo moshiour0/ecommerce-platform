@@ -227,3 +227,57 @@ def test_pending_reaches_both_completion_and_rollback():
                 frontier.append(dst)
     assert ORDER_COMPLETED in seen, "no path from PENDING to a completed order"
     assert ROLLBACK_COMPLETED in seen, "no path from PENDING to a rolled-back order"
+
+
+# ---------------------------------------------------------------------------
+# cash on delivery takes a different forward path
+# ---------------------------------------------------------------------------
+# Under COD nothing is charged at checkout, so the card table's
+# INVENTORY_RESERVED -> ChargePaymentCommand arm is not just unnecessary, it is
+# wrong: it charges a card that was never presented, for goods nobody has yet
+# received. The saga's job ends once stock is held; everything after that
+# happens to the seller orders on a courier's timescale.
+
+def test_a_card_order_still_charges():
+    decision = resolve(PENDING, "InventoryReserved", "CARD")
+    assert decision.outcome is Outcome.APPLY
+    assert decision.new_status == INVENTORY_RESERVED
+    assert decision.command == "ChargePaymentCommand"
+
+
+def test_the_default_is_the_card_path():
+    # Every existing caller and test predates payment methods; none of them
+    # may change behaviour by omitting the argument.
+    assert resolve(PENDING, "InventoryReserved") == \
+        resolve(PENDING, "InventoryReserved", "CARD")
+
+
+def test_a_cod_order_never_charges():
+    decision = resolve(PENDING, "InventoryReserved", "COD")
+    assert decision.outcome is Outcome.APPLY
+    assert decision.command is None, \
+        f"a COD order emitted {decision.command}; no card was ever presented"
+
+
+def test_a_cod_saga_finishes_once_stock_is_held():
+    # ORDER_COMPLETED here means the saga finished its work, not that the
+    # buyer has their goods -- those are the same statement for a card order
+    # and days apart for a COD one, which is why the buyer-facing status is
+    # derived from the seller orders instead of read from this column.
+    assert resolve(PENDING, "InventoryReserved", "COD").new_status == \
+        ORDER_COMPLETED
+
+
+def test_cod_shares_the_compensation_arms():
+    # Releasing stock and failing an order mean the same thing however the
+    # order was going to be paid for.
+    for method in ("CARD", "COD"):
+        decision = resolve(PENDING, "InventoryReservationFailed", method)
+        assert decision.outcome is Outcome.APPLY
+        assert decision.new_status == ROLLBACK_COMPLETED
+
+
+def test_an_unknown_event_is_unknown_on_both_paths():
+    for method in ("CARD", "COD"):
+        assert resolve(PENDING, "Teleported", method).outcome is \
+            Outcome.UNKNOWN_EVENT

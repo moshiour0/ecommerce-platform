@@ -144,3 +144,20 @@ split_rules = load_module(
     "split_rules_under_test",
     "services/order-saga/app/services/split_rules.py",
 )
+
+# cod_rules imports split_rules relatively. load_module executes the file
+# directly, so the relative import needs a package to resolve against; the two
+# are registered together here rather than rewriting the service's imports to
+# suit the test loader.
+import sys as _sys, types as _types
+_pkg = _types.ModuleType("order_saga_services")
+_pkg.__path__ = []
+_sys.modules["order_saga_services"] = _pkg
+_sys.modules["order_saga_services.split_rules"] = split_rules
+
+_cod_src = (REPO / "services" / "order-saga" / "app" / "services"
+            / "cod_rules.py").read_text(encoding="utf-8")
+cod_rules = _types.ModuleType("cod_rules_under_test")
+exec(compile(_cod_src.replace("from .split_rules import",
+                              "from order_saga_services.split_rules import"),
+             "cod_rules", "exec"), cod_rules.__dict__)

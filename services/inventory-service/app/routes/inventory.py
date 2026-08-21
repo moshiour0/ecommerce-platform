@@ -2,9 +2,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..schemas import (
-    InventoryResponse, ReleaseRequest, ReleaseResponse, ReserveRequest,
+    ConsumeRequest, ConsumeResponse, InventoryResponse, ReleaseRequest,
+    ReleaseResponse, ReserveRequest,
 )
-from ..services.inventory_service import release_inventory, reserve_inventory
+from ..services.inventory_service import (
+    consume_inventory, release_inventory, reserve_inventory,
+)
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
 
@@ -33,3 +36,14 @@ async def release_endpoint(
     if not idempotency_key:
         raise HTTPException(status_code=400, detail="Idempotency-Key header is required")
     return await release_inventory(db, request, idempotency_key)
+
+
+# Delivery, not checkout: the units leave when the buyer takes them. A
+# dispatched parcel is still returnable and stays reserved.
+@router.post("/consume", response_model=ConsumeResponse, status_code=200)
+async def consume_endpoint(
+    request: ConsumeRequest,
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    db: AsyncSession = Depends(get_db),
+):
+    return await consume_inventory(db, request, idempotency_key)

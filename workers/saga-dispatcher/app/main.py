@@ -104,7 +104,11 @@ CLAIM_SQL = """
 WITH claimable AS (
     SELECT id
     FROM outbox_messages
-    WHERE aggregate_type = 'OrderSaga'
+    -- SellerOrder as well as OrderSaga. The COD lifecycle emits its stock
+    -- movements against the seller order they belong to, and a filter on
+    -- 'OrderSaga' alone left them unclaimed forever: every transition applied,
+    -- every event was published, and not one unit ever moved.
+    WHERE aggregate_type IN ('OrderSaga', 'SellerOrder')
       AND processed_at IS NULL
       AND (type LIKE '%Command' OR type = 'SagaTimedOut')
       AND (claimed_at IS NULL
@@ -313,6 +317,28 @@ async def handle(msg_id, msg_type: str, payload: dict) -> bool:
         logger.error(f"Inventory release failed: order={order_id} "
                      f"status={res.status_code}")
         return False  # never abandon an outstanding release
+
+    # Seller-order scoped, and deliberately NOT advancing the parent saga.
+    # These belong to one seller's part of a split order; advancing the whole
+    # order because one seller's parcel was delivered would drive the buyer's
+    # order to a state the other seller has not reached.
+    if msg_type in ("ReleaseSellerOrderInventoryCommand",
+                    "ConsumeSellerOrderInventoryCommand"):
+        endpoint = ("release" if msg_type.startswith("Release") else "consume")
+        # Scoped to this seller order's products. Releasing the whole order
+        # because one seller cancelled would put another seller's live stock
+        # back on sale.
+        body = {"order_id": order_id,
+                "product_ids": payload.get("product_ids") or None}
+        res = await _post("inventory-service", f"{INVENTORY_URL}/{endpoint}",
+                          body, idem)
+        if res.status_code == 200:
+            logger.info(f"{endpoint} for seller order "
+                        f"{payload.get('seller_order_id')}: {res.status_code}")
+            return True
+        logger.error(f"Seller order inventory {endpoint} failed: "
+                     f"order={order_id} status={res.status_code}")
+        return False  # never abandon an outstanding stock movement
 
     if msg_type == "ConfirmOrderCommand":
         return await _advance_saga(order_id, "OrderCompleted", f"ord-cmp-{msg_id}")

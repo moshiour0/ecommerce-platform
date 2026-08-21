@@ -43,8 +43,17 @@ async def saga_reaper_loop():
     """
     Saga Staleness & Timeout Policy.
 
-    Sagas stuck in PENDING, INVENTORY_RESERVED or PAID for >15 minutes are
-    swept and their compensations emitted via outbox in the same transaction.
+    Card sagas stuck in PENDING, INVENTORY_RESERVED or PAID for >15 minutes
+    are swept and their compensations emitted via outbox in the same
+    transaction.
+
+    COD sagas are swept only at PENDING. Under cash on delivery stock is held
+    from checkout until the buyer takes the parcel, which is days rather than
+    seconds, so the fifteen-minute window that protects a card order destroys
+    a COD one: it would release the stock while the goods are on a van.
+    Staleness past that point is a seller or courier problem and belongs to
+    the seller order's own timestamps (migration 017), not to a reaper that
+    compensates.
 
     PAID was previously not swept at all. A saga that reached PAID and never
     received OrderCompleted stayed there forever: the card was charged, the
@@ -70,8 +79,25 @@ async def saga_reaper_loop():
                     WITH candidates AS (
                         SELECT id, user_id, status
                         FROM order_saga_states
-                        WHERE status IN ('PENDING', 'INVENTORY_RESERVED', 'PAID')
-                          AND updated_at < NOW() - INTERVAL '15 minutes'
+                        WHERE updated_at < NOW() - INTERVAL '15 minutes'
+                          AND (
+                            -- Card orders complete in seconds, so anything
+                            -- still moving after fifteen minutes is stuck.
+                            (payment_method = 'CARD'
+                             AND status IN ('PENDING', 'INVENTORY_RESERVED', 'PAID'))
+                            -- COD orders hold stock from checkout until
+                            -- delivery, which is days. Sweeping one at
+                            -- INVENTORY_RESERVED would release the stock out
+                            -- from under an order already on a van -- and then
+                            -- the goods arrive, the buyer pays a courier, and
+                            -- nothing in the platform records that anybody is
+                            -- owed anything.
+                            --
+                            -- PENDING is still swept: a reservation that never
+                            -- came back in fifteen minutes really is broken,
+                            -- whichever way the order is being paid for.
+                            OR (payment_method <> 'CARD' AND status = 'PENDING')
+                          )
                         FOR UPDATE SKIP LOCKED
                     ),
                     timed_out AS (

@@ -204,3 +204,82 @@ def is_lock_contention(exc: BaseException) -> bool:
             return True
         current = getattr(current, "orig", None) or current.__cause__
     return False
+
+
+# ---------------------------------------------------------------------------
+# consuming: the units actually left
+# ---------------------------------------------------------------------------
+# Until now nothing ever moved units *out* of reserved. Reserve took them from
+# available and held them; release put them back. A delivered order left its
+# units held forever, so `quantity_reserved` grew without bound and the number
+# stopped meaning "committed to open orders" -- 41 units across the platform
+# were held by orders that had long since completed.
+#
+# Under COD there is an obvious moment for this and it is not checkout: the
+# goods leave when the buyer takes them at the door and pays the courier. A
+# parcel that is dispatched is still returnable, so it stays reserved.
+# Delivery is the point of no return, and delivery is what consumes.
+
+class ConsumeOutcome(str, Enum):
+    CONSUMED = "consumed"      # units left the building
+    NOTHING_HELD = "nothing"   # no live reservation: a no-op, and a success
+    INVALID = "invalid"        # non-positive quantity recorded
+
+
+@dataclass(frozen=True)
+class ConsumePlan:
+    outcome: ConsumeOutcome
+    new_level: Optional[StockLevel]
+    event: Optional[str]
+    detail: str
+
+    @property
+    def consumed(self) -> bool:
+        return self.outcome is ConsumeOutcome.CONSUMED
+
+
+EVENT_CONSUMED = "InventoryConsumed"
+
+
+def plan_consume(level: Optional[StockLevel], held: int) -> ConsumePlan:
+    """Retire `held` units from reserved without returning them to available.
+
+    The one asymmetry with plan_release, and the whole point of this function:
+    a release conserves the total because the goods are still on the shelf, and
+    a consume does not because they are in a customer's hands. A consume
+    implemented as a release would put delivered goods back on sale.
+
+    Like release, nothing held is a success. Delivery confirmations arrive from
+    couriers and are retried, so the second one must be a no-op rather than an
+    error that makes a courier integration look broken.
+    """
+    if held == 0:
+        return ConsumePlan(ConsumeOutcome.NOTHING_HELD, None, EVENT_CONSUMED,
+                           "no live reservation; nothing to consume")
+
+    if held < 0:
+        return ConsumePlan(ConsumeOutcome.INVALID, None, None,
+                           f"held quantity must not be negative, got {held}")
+
+    if level is None:
+        return ConsumePlan(ConsumeOutcome.INVALID, None, None,
+                           "no inventory record for this product")
+
+    if level.quantity_reserved < held:
+        # The ledger says this order holds more than the item says is reserved.
+        # Consuming anyway would drive quantity_reserved negative and hide the
+        # discrepancy; refusing surfaces it while the numbers still add up.
+        return ConsumePlan(
+            ConsumeOutcome.INVALID, None, None,
+            f"ledger says {held} held but the item shows only "
+            f"{level.quantity_reserved} reserved")
+
+    return ConsumePlan(
+        ConsumeOutcome.CONSUMED,
+        StockLevel(
+            quantity_available=level.quantity_available,
+            quantity_reserved=level.quantity_reserved - held,
+        ),
+        EVENT_CONSUMED,
+        f"consumed {held}",
+    )

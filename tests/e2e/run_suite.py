@@ -37,6 +37,9 @@ TESTS = [
     # After test_11: it onboards its own sellers, but it needs the same
     # services answering and there is no reason to interleave them.
     "test_12_order_splitting",
+    # Seeds and consumes its own stock, so it neither depends on nor
+    # disturbs the inventory the earlier tests arranged.
+    "test_13_cod_lifecycle",
     # Last on purpose: these two stop infrastructure. Both put it back and
     # wait for recovery before finishing, but running either earlier would
     # have every test after it sharing a cluster mid-repair.
