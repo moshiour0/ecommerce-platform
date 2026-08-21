@@ -76,7 +76,19 @@ CATALOG_TIMESTAMP_FIELD = "catalog_updated_at"
 
 # Fields owned by other services. Named explicitly so the guarantee is
 # checkable rather than implied by the absence of a name from the list above.
-FOREIGN_FIELDS = ("price_cents", "quantity_available")
+#
+# The seller signals joined this list when they were denormalised onto product
+# documents (ARCHITECTURE §3g). They matter here more than the other two: a
+# rating and a return rate are expensive to recompute, and they belong to a
+# seller rather than to any product, so a catalog backfill that dropped them
+# would blank every seller's standing across their whole catalogue and the
+# ranking would silently flatten to neutral until the next review landed.
+# The parity test against read_model is what caught this.
+FOREIGN_FIELDS = ("price_cents", "quantity_available",
+                  "seller_rating", "seller_review_count",
+                  "seller_on_time_dispatch_rate", "seller_cancellation_rate",
+                  "seller_return_rate", "seller_confidence",
+                  "seller_location", "seller_signals_updated_at")
 
 DEFAULT_BATCH_SIZE = 500
 

@@ -6,11 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
 from ..schemas import (
+    SellerLocationRequest,
     ContractAcceptanceRequest, DocumentSubmissionRequest, ReasonRequest,
     ReviewResultRequest, SellerPermissionResponse, SellerRegisterRequest,
     SellerResponse,
 )
 from ..services.seller_service import (
+    set_location,
     accept_contract, ban_seller, get_commission, get_permission, get_seller,
     list_sellers,
     record_review_result, register_seller, reinstate_seller, start_review,
@@ -105,6 +107,21 @@ async def ban_endpoint(seller_id: uuid.UUID, request: ReasonRequest,
 # What payment-service books commission at. Separate from /permission, which is
 # deliberately narrow: catalog asking whether a seller may list has no business
 # learning what the platform charges them.
+@router.patch("/{seller_id}/location", response_model=SellerResponse)
+async def update_location(seller_id: uuid.UUID, request: SellerLocationRequest,
+                          db: AsyncSession = Depends(get_db)):
+    """Set where the shop is.
+
+    PATCH, because a seller correcting their coordinates should not have to
+    resend their whole profile -- and an omitted field here means "leave it
+    alone", not "clear it".
+    """
+    return await set_location(
+        db, seller_id, latitude=request.latitude, longitude=request.longitude,
+        address_line=request.address_line, city=request.city,
+        district=request.district)
+
+
 @router.get("/{seller_id}/commission", status_code=200)
 async def commission_endpoint(seller_id: uuid.UUID,
                               db: AsyncSession = Depends(get_db)):

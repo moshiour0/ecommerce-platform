@@ -19,7 +19,8 @@ logging.getLogger("elastic_transport").setLevel(logging.INFO)
 from .indexers.es_client import ensure_index_exists
 from .consumers.event_router import process_event
 from .consumers.event_rules import (
-    INDEXED_EVENTS, PRODUCT_CREATED, infer_event_type, is_product_payload,
+    INDEXED_EVENTS, PRODUCT_CREATED, SELLER_SIGNAL_EVENTS,
+    infer_event_type, is_product_payload,
 )
 
 try:
@@ -39,7 +40,12 @@ def main():
         "Pricing.events",
         "pricing.events",
         "Inventory.events",
-        "inventory.events"
+        "inventory.events",
+        # Seller standing. These carry the events that move a seller's ranking
+        # signals -- reviews, concluded orders, and the shop's own location.
+        "Review.events",
+        "SellerOrder.events",
+        "Seller.events",
     ]
 
     def callback_wrapper(msg_data, headers=None):
@@ -90,13 +96,29 @@ def main():
 
         logger.debug(f"Routing to Elasticsearch -> Event: {event_type}, Data: {payload}")
         
-        # E-2/E-3 Fix: Validate event_id is present for idempotent ES upsert
+        # E-2/E-3 Fix: Validate event_id is present for idempotent ES upsert.
+        #
+        # Only for events that write a *document*. A seller-signal trigger does
+        # not: it refreshes one seller's numbers across their whole catalogue
+        # with an update-by-query, so the unit of work is a seller and there is
+        # no document id to be idempotent about. The refresh is naturally
+        # idempotent instead -- it writes current values, so running it twice
+        # writes the same thing twice.
+        #
+        # Without this exemption these events are dead-lettered on arrival:
+        # they carry `seller_id`, not `id`, and the guard reads as a hard data
+        # fault rather than a category it was never written for.
+        # Bound before the branch: the error handler below reports it, and a
+        # seller-signal event that raised would otherwise fail with NameError
+        # inside the handler and hide whatever actually went wrong.
         doc_id = payload.get("id")
-        if not doc_id:
-            logger.error(f"Event missing 'id' field — cannot ensure idempotent ES write. Event type: {event_type}. Routing to DLQ.")
-            raise ValueError(f"Event payload missing required 'id' field for idempotent indexing")
-        
-        logger.debug(f"Idempotent ES upsert: doc_id={doc_id}, event_type={event_type}")
+
+        if event_type not in SELLER_SIGNAL_EVENTS:
+            if not doc_id:
+                logger.error(f"Event missing 'id' field — cannot ensure idempotent ES write. Event type: {event_type}. Routing to DLQ.")
+                raise ValueError(f"Event payload missing required 'id' field for idempotent indexing")
+
+            logger.debug(f"Idempotent ES upsert: doc_id={doc_id}, event_type={event_type}")
         
         try:
             if inspect.iscoroutinefunction(process_event):

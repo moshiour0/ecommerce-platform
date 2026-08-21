@@ -34,6 +34,19 @@ const CATALOG = 'catalog-service';
 const PRICING = 'pricing-service';
 const INVENTORY = 'inventory-service';
 
+// The seller's own signals, denormalised onto every product they sell.
+//
+// A fourth writer rather than folding these into CATALOG, because they do not
+// come from catalog-service and they do not change when a product changes.
+// They are a *seller* fact copied onto product documents so Elasticsearch can
+// score on them in one query -- the ranking used to fetch them per seller, per
+// results page, over HTTP.
+//
+// Their own owner is what stops a catalog update from silently blanking a
+// rating: a ProductCreated redelivery writes CATALOG's fields and leaves
+// anything it does not name alone.
+const SELLER_SIGNALS = 'seller-projection';
+
 // Written by every owner, and so owned by none. Kept small: each addition is a
 // field nobody can reason about.
 const ANY_OWNER = '*';
@@ -60,10 +73,29 @@ const PRODUCT_FIELD_OWNERS = {
 
   quantity_available: 'inventory-service',
 
+  // --- seller signals, denormalised (ARCHITECTURE 3g) ---------------------
+  // Facts about the seller, copied here so a search scores in one query
+  // instead of N HTTP lookups. Refreshed as a set: a partial write would
+  // leave today's rating beside last week's return rate and nothing would
+  // look wrong.
+  seller_rating: 'seller-projection',
+  seller_review_count: 'seller-projection',
+  seller_on_time_dispatch_rate: 'seller-projection',
+  seller_cancellation_rate: 'seller-projection',
+  seller_return_rate: 'seller-projection',
+  // How much fulfilment history backs those rates. A rate without its
+  // confidence is a number that looks more certain than it is.
+  seller_confidence: 'seller-projection',
+  // geo_point. Absent means unlocated rather than far away -- distance_decay
+  // returns exactly 1.0 for a missing distance, so a seller who never set
+  // coordinates is not penalised for it.
+  seller_location: 'seller-projection',
+  seller_signals_updated_at: 'seller-projection',
+
   updated_at: '*'
 };
 
-const KNOWN_OWNERS = [CATALOG, PRICING, INVENTORY];
+const KNOWN_OWNERS = [CATALOG, PRICING, INVENTORY, SELLER_SIGNALS];
 
 class OwnershipError extends Error {
   constructor(message) {
@@ -161,6 +193,7 @@ module.exports = {
   CATALOG,
   PRICING,
   INVENTORY,
+  SELLER_SIGNALS,
   ANY_OWNER,
   PRODUCT_FIELD_OWNERS,
   OwnershipError,

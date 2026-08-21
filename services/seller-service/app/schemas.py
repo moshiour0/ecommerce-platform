@@ -78,6 +78,16 @@ class SellerResponse(BaseModel):
     district: Optional[str] = None
     country: str = "BD"
 
+    # Where the shop is. Returned because the read-model projection needs it
+    # to put a seller on the map (ARCHITECTURE 3g) -- proximity is a scoring
+    # weight, and it cannot weigh a shop nobody can locate.
+    #
+    # address_line is deliberately NOT here. A courier needs it; a ranking does
+    # not, and this response is read by services that only want to know where
+    # to place a dot.
+    latitude: Optional[str] = None
+    longitude: Optional[str] = None
+
     created_at: Optional[datetime] = None
 
 
@@ -92,3 +102,20 @@ class SellerPermissionResponse(BaseModel):
     status: str
     may_list_products: bool
     may_receive_orders: bool
+
+
+class SellerLocationRequest(BaseModel):
+    """Where the shop is.
+
+    Strings, matching the column type. seller_db stores coordinates as text
+    because the ranking wanted a number rather than a spatial index, and the
+    projection is where they are parsed -- a malformed pair makes a seller
+    *unlocated*, never located at (0, 0), which is in the Gulf of Guinea and
+    would make every broken profile each other's nearest neighbour.
+    """
+
+    latitude: Optional[str] = Field(None, max_length=32)
+    longitude: Optional[str] = Field(None, max_length=32)
+    address_line: Optional[str] = Field(None, max_length=512)
+    city: Optional[str] = Field(None, max_length=128)
+    district: Optional[str] = Field(None, max_length=128)

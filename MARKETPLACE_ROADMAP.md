@@ -599,8 +599,12 @@ build, and it is worth reading as a list rather than as a footnote:
   verified purchase only, product and seller rated separately. The ranking
   formula scores on both halves of `quality_boost` for the first time. Not
   built: text moderation, and any helpfulness or abuse-report signal.
-- **No proximity in the live pipeline.** The decay is implemented and tested;
-  seller coordinates are not in the read model.
+- ~~**No proximity in the live pipeline.**~~ ✅ done 2026-08-21. Seller
+  coordinates are in the read model as a `geo_point` and `GET /search` takes a
+  buyer position (§3i). The same projection indexes the quality signals, so
+  ranking no longer fetches them per seller per page. What remains of the
+  formula is personalisation: `affinity` is `None` everywhere, because nothing
+  records what a buyer has looked at.
 - **No payout execution.** The ledger records one and clears the liability;
   the rails and the bank details do not exist.
 - **No real courier configured.** Only the manual/spreadsheet provider ships.

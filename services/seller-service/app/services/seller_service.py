@@ -55,6 +55,13 @@ def to_response(seller: Seller, submitted_types=None) -> SellerResponse:
         missing_documents=sorted(
             d.value for d in missing_documents(submitted_types or [])),
         city=seller.city,
+        # Needed by the read-model projection to place the shop on the map
+        # (ARCHITECTURE 3g). Omitting them here made the endpoint answer
+        # `null` for a seller whose coordinates were stored perfectly well,
+        # which would have left every shop unlocated and proximity inert --
+        # exactly the bug this whole projection exists to fix.
+        latitude=seller.latitude,
+        longitude=seller.longitude,
         district=seller.district,
         country=seller.country,
         created_at=seller.created_at,
@@ -104,6 +111,11 @@ def _emit(db: AsyncSession, seller: Seller, event: str) -> None:
             "city": seller.city,
             "district": seller.district,
             "country": seller.country,
+            # Carried so the read-model projection can place the shop without
+            # calling back. Coordinates only -- address_line stays out of
+            # Kafka, where it would land in every consumer's storage.
+            "latitude": seller.latitude,
+            "longitude": seller.longitude,
             # Denormalised on purpose: a consumer deciding whether to accept a
             # listing should not have to re-derive the rule, and re-deriving is
             # how two services end up disagreeing about who may sell.
@@ -377,3 +389,40 @@ async def get_commission(db: AsyncSession, seller_id: uuid.UUID) -> dict:
         "current_contract_version": CURRENT_CONTRACT_VERSION,
         "commission_bps": rate,
     }
+
+
+EVENT_LOCATION_UPDATED = "SellerLocationUpdated"
+
+
+async def set_location(db: AsyncSession, seller_id, *, latitude=None,
+                       longitude=None, address_line=None, city=None,
+                       district=None):
+    """Record where a shop is, and tell the read model.
+
+    Its own endpoint rather than a general profile PATCH: this is the only
+    field a seller can change that reorders search results, and giving it a
+    named route means the event that follows is unambiguous. A general update
+    would emit "something changed" and the projection would have to refresh on
+    every display-name edit.
+
+    Coordinates are stored as given and parsed downstream (seller_projection),
+    so a bad pair is one seller unlocated rather than a rejected request that
+    also loses the address they were trying to correct.
+    """
+    seller = await _load(db, seller_id)
+
+    if latitude is not None:
+        seller.latitude = latitude
+    if longitude is not None:
+        seller.longitude = longitude
+    if address_line is not None:
+        seller.address_line = address_line
+    if city is not None:
+        seller.city = city
+    if district is not None:
+        seller.district = district
+
+    _emit(db, seller, EVENT_LOCATION_UPDATED)
+    await db.commit()
+    await db.refresh(seller)
+    return to_response(seller, await _document_types(db, seller_id))

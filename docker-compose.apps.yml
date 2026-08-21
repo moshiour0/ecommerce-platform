@@ -490,6 +490,13 @@ services:
       # enough to discover the cluster; listing all three means a restart
       # during a broker outage still finds one.
       - KAFKA_BROKER=kafka:29092,kafka-2:29092,kafka-3:29092
+      # The three services the seller-signal projection reads. It is a
+      # read-through refresh: an event says a seller's signals moved, not what
+      # they moved to, so the numbers are fetched rather than rebuilt from the
+      # stream (which would be a second copy of the truth that drifts).
+      - ORDER_SAGA_URL=http://order-saga:8012
+      - REVIEWS_SERVICE_URL=http://reviews-service:8022
+      - SELLER_SERVICE_URL=http://seller-service:8020
     # Worker has no API ports to expose
     command: [ "python", "-m", "app.main" ]
 

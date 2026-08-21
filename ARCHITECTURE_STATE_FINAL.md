@@ -677,17 +677,17 @@ distinct seller on a results page, cached in process for a minute, behind a
 Rule 11 breaker, and every failure resolves to *average*. A search must not
 fail because a metrics service is slow.
 
-That is correct and slower than it should be. D4 describes the quality boost as
-a `function_score` over **indexed** fields, and that is right: the signals
-belong denormalised onto the product documents by the CQRS pipeline so
-Elasticsearch scores them in one query. Doing it in the service is what makes
-the ranking real today rather than in whichever sprint the projection lands.
+~~That is correct and slower than it should be.~~ The signals are now
+denormalised onto the product documents by the CQRS pipeline (§3i), so
+Elasticsearch scores them in the query that matched the text. The per-seller
+lookup remains only as a fallback for documents indexed before the projection
+existed.
 
-**Not wired: proximity.** `distance_decay` is implemented and fully tested, and
-nothing calls it with a real distance — seller coordinates are not in the read
-model. Passing `None` makes the decay exactly 1.0, the same as an unlocated
-seller, rather than silently ordering by something else. Wiring it is the same
-projection job as the quality signals.
+**Proximity: wired.** ~~`distance_decay` is not called with a real
+distance.~~ Seller coordinates are in the read model as a `geo_point` (§3i),
+and `GET /search?lat=&lon=` scores by great-circle distance. `None` still means
+unlocated and still decays to exactly 1.0, so a shop that has not set a
+location is neither helped nor buried.
 
 **Reviews: built.** ~~There is no reviews service.~~ `reviews-service`
 (§3h) now supplies `rating` and `review_count` from verified purchases, and
@@ -758,6 +758,83 @@ otherwise an outage is the way to publish whatever you like.
 
 Still open: nothing moderates review text, and there is no helpfulness or
 abuse-report signal. Both are real and neither is faked.
+
+### 3i. Seller signals in the read model (implemented)
+
+The last two gaps §3g named, closed by one piece of work.
+
+**Quality is indexed, not fetched.** `search-service` used to make one HTTP
+call per distinct seller on every results page — cached for a minute, capped at
+25 lookups, behind a breaker, every failure resolving to average. Correct, and
+a round trip inside a search. A projection in `stream-processor` now copies
+each seller's signals onto their product documents, and Elasticsearch scores on
+them in the query that already matched the text.
+
+**Proximity measures a real distance.** `distance_decay` was implemented and
+fully tested and called with `None`, because seller coordinates were not in the
+read model. Sellers can now set a shop location (`PATCH
+/sellers/{id}/location`), it lands on their products as a `geo_point`, and
+`GET /search?lat=&lon=` scores by great-circle distance.
+
+Verified with real geography — an excellent shop 214 km away scores 0.9234
+against a mediocre one 1.5 km away at 0.8796. That is D4's stated rule, and the
+reason the distance floor is the derived 0.80 rather than D4's illustrative
+0.6, which produces the opposite.
+
+**A fourth read-model writer.** `seller-projection` owns the eight seller
+fields; catalog, pricing and inventory own theirs. A `ProductCreated`
+redelivery writes catalog's fields and leaves a rating alone.
+
+**Read-through, not event-sourced.** An event says a seller's signals *moved*,
+not what they moved to — a review carries one rating, and ranking needs the
+average. Rebuilding that here would mean this worker keeping running totals: a
+second copy of the truth that drifts from the first with no way to notice. So
+the event is a trigger and the numbers are fetched.
+
+The cost is honest: one refresh is two HTTP calls plus an `update_by_query`
+across that seller's whole catalogue, because the unit of change is a seller
+and the unit of storage is a product. Refreshes are coalesced per seller over
+30 seconds, and `REFRESH_TRIGGERS` is a small explicit set — `SellerOrder`
+events that do not *conclude* an order are excluded, since the rates cannot
+move until one does.
+
+Refreshed as a set including the nulls: a seller whose last review is removed
+must have their rating *cleared*, and a write that skipped nulls would leave
+yesterday's number in place forever.
+
+**Three gates, each of which fails quietly.** Worth recording because it cost
+four attempts to get one event through. `stream-processor` filters in
+`INDEXED_EVENTS` (main.py, before the router runs), then on a required `id`
+field for idempotent document writes, then in the router itself. Wiring only
+the router produced an event that reached Kafka, reached the worker, committed
+its offset and did nothing — while the log line said `ignoring
+SellerLocationUpdated; no projection for it here`, which is indistinguishable
+from the intended case. Seller events carry `seller_id`, not `id`, so the
+second gate dead-lettered them; that guard is for events that write a
+*document*, and a signal refresh writes none. Tests now assert every trigger
+survives all three.
+
+**Four bugs this surfaced:**
+
+* `ensure_index_exists` only ever *created*. Any environment that had run
+  before kept its original mapping, so new fields were mapped dynamically —
+  and `seller_location` would have become an object rather than a `geo_point`,
+  failing every geo query at whatever later point somebody wrote one. It now
+  extends the mapping additively and reports type conflicts rather than
+  papering over them.
+* `to_response` in seller-service did not return the coordinates, so
+  `GET /sellers/{id}` answered `null` for a location it had stored perfectly
+  well — which would have left every shop unlocated and proximity inert.
+* The reindex worker's `FOREIGN_FIELDS` did not list the seller signals, so a
+  catalog backfill would have blanked every seller's standing across their
+  whole catalogue. The existing parity test caught it.
+* `doc_id` became unbound in the error handler, so a failing seller event would
+  have raised `NameError` inside the handler and hidden the real error.
+
+**Still open.** Personalisation is the remaining term of the formula: `affinity`
+is passed as `None` everywhere, because nothing records what a buyer has looked
+at. And the buyer's location has to be supplied by the caller — there is no
+saved delivery address feeding it.
 
 ## 4. Webhook Deduplication Strategy (4-Layers)
 External PSP webhooks must pass this exact sequence:

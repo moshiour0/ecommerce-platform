@@ -39,9 +39,27 @@ CATALOG = "catalog-service"
 PRICING = "pricing-service"
 INVENTORY = "inventory-service"
 
+# The seller's own signals, denormalised onto every product they sell.
+#
+# A fourth writer rather than folding these into CATALOG, because they do not
+# come from catalog-service and they do not change when a product changes. They
+# are a *seller* fact copied onto product documents so Elasticsearch can score
+# on them in one query -- which is the whole reason this exists (§3g: the
+# ranking was fetching them per seller, per results page, over HTTP).
+#
+# Giving them their own owner is what stops a catalog update from silently
+# blanking a rating: a ProductCreated redelivery writes CATALOG's fields, and
+# anything it does not name is left alone.
+SELLER_SIGNALS = "seller-projection"
+
 # Written by every owner, and so owned by none. Kept deliberately small: each
 # addition here is a field nobody can reason about.
 ANY_OWNER = "*"
+
+# Every writer allowed to touch a product document. Derived nowhere else, so
+# adding an owner without adding it here fails loudly instead of writing
+# fields nobody owns.
+KNOWN_WRITERS = frozenset({CATALOG, PRICING, INVENTORY, SELLER_SIGNALS})
 
 PRODUCT_FIELD_OWNERS: Mapping[str, str] = {
     "product_id": CATALOG,
@@ -64,6 +82,28 @@ PRODUCT_FIELD_OWNERS: Mapping[str, str] = {
     "price_cents": PRICING,
 
     "quantity_available": INVENTORY,
+
+    # --- seller signals, denormalised (§3g) --------------------------------
+    # Every one of these is a fact about the seller, copied here so a search
+    # scores in one query instead of N HTTP lookups. They are refreshed as a
+    # set: a partial write would leave a rating from today beside a return rate
+    # from last week, and nothing would look wrong.
+    "seller_rating": SELLER_SIGNALS,
+    "seller_review_count": SELLER_SIGNALS,
+    "seller_on_time_dispatch_rate": SELLER_SIGNALS,
+    "seller_cancellation_rate": SELLER_SIGNALS,
+    "seller_return_rate": SELLER_SIGNALS,
+    # How much fulfilment history backs the rates above. Carried because
+    # ranking needs it to decide how far to move a score, and a rate without
+    # its confidence is a number that looks more certain than it is.
+    "seller_confidence": SELLER_SIGNALS,
+    # geo_point. Nullable, and absent means unlocated rather than far away --
+    # distance_decay returns exactly 1.0 for None, so a seller who never set
+    # coordinates is not penalised for it.
+    "seller_location": SELLER_SIGNALS,
+    # This writer's own mark, for the same reason catalog has one: a refresh
+    # must be able to tell its own writes from everyone else's.
+    "seller_signals_updated_at": SELLER_SIGNALS,
 
     "updated_at": ANY_OWNER,
 }
@@ -97,10 +137,10 @@ def validate_product_write(owner: str, fields: Iterable[str]) -> None:
     `quantity_avaliable` alongside the real column and the document looks fine
     until someone searches on it.
     """
-    if owner not in {CATALOG, PRICING, INVENTORY}:
+    if owner not in KNOWN_WRITERS:
         raise OwnershipError(
             f"unknown writer {owner!r}; expected one of "
-            f"{sorted({CATALOG, PRICING, INVENTORY})}")
+            f"{sorted(KNOWN_WRITERS)}")
 
     allowed = fields_owned_by(owner)
     offending = [f for f in fields if f not in allowed]
@@ -151,3 +191,32 @@ def write_product(es, product_id: str, owner: str, fields: Dict[str, Any],
     # documents whose whole content was a stock level and a timestamp.
     body["doc"].setdefault("product_id", product_id)
     return es.update(index=index, id=product_id, body=body)
+
+
+def quality_from_document(source: Mapping[str, Any]) -> Dict[str, Any]:
+    """Turn an indexed product document into ranking's quality inputs.
+
+    Lives here, beside the field names it reads, because it is the other end of
+    the same contract: the projection writes `seller_rating`, ranking wants
+    `rating`, and a rename on one side has to be a rename on the other. Two
+    copies of this translation in two services is how a field quietly stops
+    being read.
+
+    A document with no seller signals yields all-None, which `quality_boost`
+    scores as exactly 1.0 -- the same as the HTTP lookup this replaced did on
+    failure. A product indexed before the projection existed is therefore
+    neutral rather than broken, and needs no backfill to stay searchable.
+    """
+    return {
+        "rating": source.get("seller_rating"),
+        "review_count": source.get("seller_review_count"),
+        "on_time_dispatch_rate": source.get("seller_on_time_dispatch_rate"),
+        "cancellation_rate": source.get("seller_cancellation_rate"),
+        "return_rate": source.get("seller_return_rate"),
+        "confidence": source.get("seller_confidence"),
+    }
+
+
+def has_seller_signals(source: Mapping[str, Any]) -> bool:
+    """Whether the projection has written to this document yet."""
+    return source.get("seller_signals_updated_at") is not None

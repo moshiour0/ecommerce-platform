@@ -12,6 +12,7 @@ from conftest import event_rules
 infer_event_type = event_rules.infer_event_type
 is_product_payload = event_rules.is_product_payload
 INDEXED_EVENTS = event_rules.INDEXED_EVENTS
+SELLER_SIGNAL_EVENTS = event_rules.SELLER_SIGNAL_EVENTS
 
 # Verbatim from inventory_db.outbox_messages.
 FAILED_RESERVATION = {
@@ -93,8 +94,32 @@ def test_an_explicit_type_always_wins():
     assert infer_event_type({"event_type": "AlsoFine"}, {}) == "AlsoFine"
 
 
-def test_only_three_event_types_are_indexed():
-    assert INDEXED_EVENTS == {"ProductCreated", "PriceUpdated", "InventoryReserved"}
+def test_the_product_document_is_written_by_exactly_three_events():
+    """The three that write product fields directly.
+
+    This used to assert INDEXED_EVENTS was exactly these three. That stopped
+    being true when seller signals were denormalised onto product documents
+    (ARCHITECTURE §3g): those events do not write a product field, they trigger
+    a refresh of the seller's signals across their whole catalogue, and they
+    have to pass this same gate to reach the router at all.
+
+    The property worth keeping is the original one -- that nothing has quietly
+    been added to the set of events which write product fields -- so that is
+    what is asserted now, with the seller triggers accounted for separately.
+    """
+    product_writers = INDEXED_EVENTS - SELLER_SIGNAL_EVENTS
+    assert product_writers == {"ProductCreated", "PriceUpdated",
+                               "InventoryReserved"}
+
+
+def test_the_seller_triggers_are_admitted_by_the_gate():
+    """main.py drops anything not in INDEXED_EVENTS before the router runs.
+
+    A projection added to the router alone is silent: the event is dropped a
+    layer earlier with a DEBUG line reading "ignored on purpose", which is
+    exactly what it looks like when it is not.
+    """
+    assert SELLER_SIGNAL_EVENTS <= INDEXED_EVENTS
 
 
 # ---------------------------------------------------------------------------

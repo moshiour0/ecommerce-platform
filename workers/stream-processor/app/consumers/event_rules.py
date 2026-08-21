@@ -38,7 +38,28 @@ INVENTORY_RESERVED = "InventoryReserved"
 INVENTORY_RESERVATION_FAILED = "InventoryReservationFailed"
 INVENTORY_RELEASED = "InventoryReleased"
 
-INDEXED_EVENTS = frozenset({PRODUCT_CREATED, PRICE_UPDATED, INVENTORY_RESERVED})
+# Events that move a seller's ranking signals (ARCHITECTURE §3g).
+#
+# Restated here rather than imported from seller_projection, so this module
+# stays dependency-free and loadable on its own -- the same trade reindex_rules
+# makes. Drift is caught by a parity test rather than prevented by an import.
+#
+# It needs stating why this list exists at all, because it cost an hour: there
+# are *two* gates in this worker. This set is checked in main.py before the
+# router is ever called, and then the router dispatches. Adding a projection to
+# the router alone is completely silent -- the event is dropped one layer
+# earlier with a DEBUG line reading "ignored on purpose", which is precisely
+# what it looks like when it is *not* on purpose. SellerLocationUpdated was
+# published, reached this worker, committed its offset and did nothing, and
+# every log line about it said that was intended.
+SELLER_SIGNAL_EVENTS = frozenset({
+    "ReviewPublished", "ReviewUpdated",
+    "SellerOrderDelivered", "SellerOrderReturned", "SellerOrderCancelled",
+    "SellerApproved", "SellerReinstated", "SellerLocationUpdated",
+})
+
+INDEXED_EVENTS = frozenset({PRODUCT_CREATED, PRICE_UPDATED,
+                            INVENTORY_RESERVED}) | SELLER_SIGNAL_EVENTS
 
 
 # The Kafka header the Debezium EventRouter is configured to carry the outbox

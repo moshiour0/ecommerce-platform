@@ -239,3 +239,35 @@ def rank(candidates) -> list:
 
     scored.sort(key=lambda c: (-c["score"], str(c.get("id", ""))))
     return scored
+
+
+def haversine_km(lat1: Optional[float], lon1: Optional[float],
+                 lat2: Optional[float], lon2: Optional[float]) -> Optional[float]:
+    """Great-circle distance in kilometres, or None if either point is missing.
+
+    None rather than an exception or a large number, because "we do not know
+    where one of these is" has to reach `distance_decay` intact -- it returns
+    exactly 1.0 for None, so an unlocated shop or a buyer who declined to share
+    a location is neither helped nor punished.
+
+    Returning a big distance instead would quietly bury every seller who has
+    not filled in their address, which is the failure mode this whole file
+    keeps arguing against: unknown must be average, never bad.
+
+    Haversine rather than a projection: Bangladesh spans about 400km and the
+    error against a proper geodesic is metres, well inside the resolution of a
+    decay whose scale is ten kilometres.
+    """
+    if None in (lat1, lon1, lat2, lon2):
+        return None
+
+    radius_km = 6371.0088  # mean Earth radius
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+
+    a = (math.sin(d_phi / 2) ** 2
+         + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2)
+    # atan2 rather than asin: asin loses precision for antipodal points, and
+    # while nothing here is antipodal, the cost of being right is one function.
+    return 2 * radius_km * math.atan2(math.sqrt(a), math.sqrt(1 - a))

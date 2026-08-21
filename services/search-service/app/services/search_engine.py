@@ -1,13 +1,25 @@
 from elasticsearch import AsyncElasticsearch
 from ..schemas import SearchResponse, SearchResultItem
 from .quality_lookup import quality_for
+from .ranking_rules import haversine_km
+from python_common.read_model import (has_seller_signals,
+                                      quality_from_document)
 from .ranking_rules import rank
 from .search_rules import effective_price
 
 INDEX_NAME = "products"
 
 async def search_products(es: AsyncElasticsearch, query: str, page: int,
-                          size: int, seller_id: str = None) -> SearchResponse:
+                          size: int, seller_id: str = None,
+                          buyer_lat: float = None,
+                          buyer_lon: float = None) -> SearchResponse:
+    """Search, scored by ARCHITECTURE 3g's one pipeline.
+
+    `buyer_lat`/`buyer_lon` are optional and default to unknown. A buyer who
+    has not shared a location gets distance_km=None for every candidate, which
+    makes the decay exactly 1.0 across the board -- proximity drops out of the
+    formula rather than defaulting everyone to some notional city centre.
+    """
     from_offset = (page - 1) * size
 
     body = {
@@ -63,11 +75,20 @@ async def search_products(es: AsyncElasticsearch, query: str, page: int,
     total_hits = res["hits"]["total"]["value"]
     hits = res["hits"]["hits"]
 
-    # Seller quality for the sellers on this page, and only them. Best effort:
-    # a seller we could not resolve ranks as average, which is the same rule
-    # cold start applies. A search must not fail because a metrics service is
-    # slow.
-    quality = await quality_for(h["_source"].get("seller_id") for h in hits)
+    # Seller quality now arrives on the documents themselves, written by the
+    # projection in stream-processor (ARCHITECTURE 3g). This used to be an
+    # HTTP call per distinct seller on the page -- cached for a minute, capped
+    # at 25, behind a breaker, every failure resolving to average. Correct, and
+    # a round trip inside a search.
+    #
+    # quality_lookup is kept as the fallback for documents indexed before the
+    # projection existed, and only those: a hit that already carries signals
+    # costs nothing, and one that does not is resolved the old way rather than
+    # ranking as average forever.
+    unprojected = [h["_source"].get("seller_id") for h in hits
+                   if not has_seller_signals(h["_source"])
+                   and h["_source"].get("seller_id")]
+    fallback_quality = await quality_for(unprojected) if unprojected else {}
 
     candidates = []
     for hit in hits:
@@ -77,19 +98,30 @@ async def search_products(es: AsyncElasticsearch, query: str, page: int,
         # search_rules for why a silent zero is the wrong answer.
         price, price_source = effective_price(source)
         seller_id = source.get("seller_id")
+
+        if has_seller_signals(source):
+            quality = quality_from_document(source)
+        else:
+            quality = (fallback_quality.get(str(seller_id))
+                       if seller_id else None)
+
+        # Proximity, finally measured. distance_km is None whenever either end
+        # is unknown -- a buyer who did not share a location, or a shop that
+        # has not set one -- and distance_decay returns exactly 1.0 for None.
+        # So an incomplete profile is neutral rather than buried, which is the
+        # same cold-start rule the rest of the formula follows.
+        location = source.get("seller_location") or {}
+        distance_km = haversine_km(buyer_lat, buyer_lon,
+                                   location.get("lat"), location.get("lon"))
+
         candidates.append({
             "id": source.get("product_id"),
             # Elasticsearch's text score is the relevance term. Everything
             # else in the formula is a proportion of it (ranking_rules), so
             # nothing can rescue a product the query did not match.
             "relevance": hit.get("_score") or 0.0,
-            "quality": quality.get(str(seller_id)) if seller_id else None,
-            # Proximity is implemented and tested in ranking_rules and is not
-            # wired here: seller coordinates are not in the read model yet, so
-            # there is nothing to measure a distance against. Passing None
-            # makes the decay exactly 1.0 -- the same as an unlocated seller --
-            # rather than silently ordering by something else.
-            "distance_km": None,
+            "quality": quality,
+            "distance_km": distance_km,
             "affinity": None,
             "source": source,
             "price": price,

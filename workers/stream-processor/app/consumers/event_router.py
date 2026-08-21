@@ -1,6 +1,8 @@
 import logging
 from typing import Dict, Any
 from ..indexers.es_client import es, INDEX_NAME
+from ..indexers.seller_refresh import refresh_seller
+from ..seller_projection import is_refresh_trigger, seller_id_from
 
 from python_common.read_model import CATALOG, INVENTORY, PRICING, write_product
 
@@ -57,6 +59,23 @@ def process_event(event_type: str, payload: Dict[str, Any]):
                 "updated_at": payload.get("updated_at"),
             }, index=INDEX_NAME)
             logger.info(f"Updated inventory for {doc_id}. Available: {payload.get('total_quantity_available')}")
+
+        elif is_refresh_trigger(event_type):
+            # A seller's standing moved. Copy their current signals onto every
+            # product they sell, so ranking scores on indexed fields instead of
+            # an HTTP lookup per seller per results page (ARCHITECTURE 3g).
+            #
+            # The event is a trigger, not the data: it says a rating changed,
+            # not what the seller's average now is. Rebuilding that here would
+            # mean keeping a second copy of the truth that drifts from the
+            # first with no way to notice.
+            seller_id = seller_id_from(event_type, payload)
+            if not seller_id:
+                logger.warning(
+                    f"{event_type} carried no seller id; cannot refresh "
+                    f"signals. Payload keys: {sorted(payload)}")
+            else:
+                refresh_seller(seller_id)
 
         else:
             logger.debug(f"Ignoring unhandled event type: {event_type}")
