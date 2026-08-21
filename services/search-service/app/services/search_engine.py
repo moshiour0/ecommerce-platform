@@ -1,5 +1,7 @@
 from elasticsearch import AsyncElasticsearch
 from ..schemas import SearchResponse, SearchResultItem
+from .quality_lookup import quality_for
+from .ranking_rules import rank
 from .search_rules import effective_price
 
 INDEX_NAME = "products"
@@ -61,19 +63,48 @@ async def search_products(es: AsyncElasticsearch, query: str, page: int,
     total_hits = res["hits"]["total"]["value"]
     hits = res["hits"]["hits"]
 
-    items = []
+    # Seller quality for the sellers on this page, and only them. Best effort:
+    # a seller we could not resolve ranks as average, which is the same rule
+    # cold start applies. A search must not fail because a metrics service is
+    # slow.
+    quality = await quality_for(h["_source"].get("seller_id") for h in hits)
+
+    candidates = []
     for hit in hits:
         source = hit["_source"]
         # pricing's price if it has published one, catalog's list price
         # otherwise, and None rather than 0 when neither has. See
         # search_rules for why a silent zero is the wrong answer.
         price, price_source = effective_price(source)
+        seller_id = source.get("seller_id")
+        candidates.append({
+            "id": source.get("product_id"),
+            # Elasticsearch's text score is the relevance term. Everything
+            # else in the formula is a proportion of it (ranking_rules), so
+            # nothing can rescue a product the query did not match.
+            "relevance": hit.get("_score") or 0.0,
+            "quality": quality.get(str(seller_id)) if seller_id else None,
+            # Proximity is implemented and tested in ranking_rules and is not
+            # wired here: seller coordinates are not in the read model yet, so
+            # there is nothing to measure a distance against. Passing None
+            # makes the decay exactly 1.0 -- the same as an unlocated seller --
+            # rather than silently ordering by something else.
+            "distance_km": None,
+            "affinity": None,
+            "source": source,
+            "price": price,
+            "price_source": price_source,
+        })
+
+    items = []
+    for candidate in rank(candidates):
+        source = candidate["source"]
         items.append(SearchResultItem(
             product_id=source.get("product_id"),
             name=source.get("name"),
             description=source.get("description"),
-            price_cents=price,
-            price_source=price_source,
+            price_cents=candidate["price"],
+            price_source=candidate["price_source"],
             seller_id=source.get("seller_id"),
             quantity_available=source.get("quantity_available", 0)
         ))

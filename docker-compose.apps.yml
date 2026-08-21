@@ -206,6 +206,9 @@ services:
       - "8006:8006"
     environment:
       - ELASTICSEARCH_URL=http://elasticsearch:9200
+      # Seller quality signals for the ranking pipeline. Best effort and
+      # behind a breaker: a search must not fail because metrics are slow.
+      - ORDER_SAGA_URL=http://order-saga:8012
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8006" ]
 

@@ -7,7 +7,8 @@ from ..schemas import (
 )
 from ..services.saga_orchestrator import (
     advance_saga, get_seller_order, get_seller_orders,
-    list_seller_orders, start_saga, transition_seller_order,
+    list_seller_orders, seller_performance, start_saga,
+    transition_seller_order,
 )
 import uuid
 
@@ -42,6 +43,15 @@ async def process_saga_event_endpoint(
     import sys
     print(f"RECEIVED EVENT: {request.event_type} FOR {order_id}", file=sys.stderr, flush=True)
     return await advance_saga(db, order_id, request, idempotency_key)
+
+
+# Ranking's quality inputs for one seller. Its own path rather than
+# /seller-orders/metrics, which would be shadowed by the {seller_order_id}
+# route and fail as a malformed uuid.
+@router.get("/seller-metrics", status_code=200)
+async def seller_metrics_endpoint(seller_id: uuid.UUID,
+                                  db: AsyncSession = Depends(get_db)):
+    return await seller_performance(db, seller_id)
 
 
 # A seller's own queue. Declared before /{order_id}/seller-orders so the

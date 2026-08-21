@@ -27,10 +27,12 @@ Role Directive: You are "Anti-Gravity", a Principal Distributed Systems Architec
     `infrastructure/k8s/services` is currently empty. Verify before assuming.
 *   Current Priority: the marketplace path is walkable end to end — a seller
     onboards, lists, receives a split order, dispatches it, a courier delivers
-    it, the cash reconciles and the ledger records what they are owed, and
-    they can see all of it through `bff-seller` (§3d–§3f). Next is ranking
-    (§7 step 14), whose inputs are the seller performance metrics nothing yet
-    computes. The single-tenant order loop (saga, compensation, consumer
+    it, the cash reconciles, the ledger records what they are owed, they see
+    all of it through `bff-seller`, and their fulfilment record ranks them
+    (§3d–§3g). What remains is not another step down this list: it is the
+    things each step deliberately left, chief among them a reviews service, a
+    projection carrying seller signals into the read model, and payout
+    execution. The single-tenant order loop (saga, compensation, consumer
     idempotency) is closed and proven by `tests/e2e`.
 
 ## 2. Authoritative Architectural Rules
@@ -86,7 +88,7 @@ Role Directive: You are "Anti-Gravity", a Principal Distributed Systems Architec
 *   websocket-gateway: Real-time push delivery and reconnect logic (Node.js).
 *   user-service: Owns profile, identity data, and address books.
 *   catalog-service: Source of truth for product variants and base metadata.
-*   search-service: Elasticsearch read-models. Driven purely by Kafka events. Owns Elasticsearch **exclusively and has no PostgreSQL database** — no `search_db` is provisioned. The previous revision showed this service holding both a "Search Index / Read Store" and Elasticsearch, which contradicts Rule 1.
+*   search-service: Elasticsearch read-models and the one ranking pipeline (§3g). Driven purely by Kafka events. Owns Elasticsearch **exclusively and has no PostgreSQL database** — no `search_db` is provisioned. The previous revision showed this service holding both a "Search Index / Read Store" and Elasticsearch, which contradicts Rule 1.
 *   cart-service: Ephemeral cart state (Redis-backed). Cart reservations must have a strict TTL (Time-To-Live) managed by Redis. If a checkout is not initiated within the TTL, the cart-service fires a cart-expired event to release locked inventory immediately. **Cart-Checkout Mutual Exclusion:** Before initiating checkout, the cart-service must atomically transition the cart status from `active` to `checkout_in_progress` using a Postgres `UPDATE ... WHERE status = 'active'` with row-level locking (returning the updated row count to confirm the transition). The TTL sweeper must only sweep carts with `status = 'active'`, never `checkout_in_progress`. If the `checkout_in_progress` state persists for longer than 10 minutes without completing, the sweeper may reclaim it by transitioning it back to `expired` and emitting a `CartExpired` outbox event.
 *   pricing-service: Dynamic pricing calculation rules.
 *   promotion-service: Coupons and discount rules.
@@ -619,6 +621,80 @@ rate, rating), which the roadmap names as the inputs to ranking (§3.1) and
 which nothing yet computes. There is no seller-facing product editor either —
 `GET /products` lists a seller's catalogue and nothing writes it back.
 
+### 3g. Ranking: one pipeline (implemented)
+
+Personalised results, nearest-shop preference and location search are not three
+features. Built separately they fight each other — a "near me" toggle that
+contradicts the default sort, a personalisation layer reordering what proximity
+just ordered. They are one scoring function (roadmap D4):
+
+```
+final_score = text_relevance × quality_boost × distance_decay × personalisation
+```
+
+**Multiplicative, not additive.** Every factor is a proportion of what the
+relevance already established, so nothing can rescue a product the query did
+not match. An additive score lets a proximity bonus compensate for
+irrelevance, which is how a search for "keyboard" returns a nearby grocer.
+
+**The distance floor is derived, not chosen — and the roadmap's illustration
+is wrong.** D4 suggests a floor of 0.6, and 0.6 produces the *opposite* of the
+behaviour D4 promises in the same paragraph. At 40 km the decay is effectively
+zero, so quality wins only when
+
+```
+quality_far / quality_near  >  1 / floor
+```
+
+A realistic excellent-versus-mediocre gap is about 1.34, which needs a floor
+above 0.748. At 0.6 the mediocre neighbour wins by 24%. The floor is 0.80,
+with margin — 0.75 clears the inequality by 0.4%, which is a coincidence
+rather than a design. The consequence is deliberate and worth stating:
+**proximity is a tiebreaker between comparable results, not a major factor.**
+That is what "first priority to products and reviews, then the nearest shop"
+means once it is arithmetic.
+
+**Unknown is average, never bad.** A new seller penalised for having no reviews
+is never seen, therefore never earns a review, and stays unseen — the ranking
+enforcing its own prior. A missing rating, an unresolvable seller and an
+unlocated shop all contribute exactly 1.0.
+
+**Small samples are shrunk toward a prior.** A seller with one returned order
+does not have a 100% return rate; that is noise, and treating it as evidence
+makes a new seller's first bad day permanent. Every rate in
+`order-saga/seller_metrics.py` mixes in 20 pseudo-observations of average
+behaviour, and `confidence` is reported alongside so a caller can say "not
+enough data yet" rather than present a shrunk estimate as a measurement.
+Verified live: one returned order gives a 0.14 return rate, eight give 0.36.
+
+An order the buyer cancelled before the seller ever confirmed is excluded — it
+is not the seller's failure, and counting it would punish sellers in categories
+buyers browse indecisively. Returns weigh more than cancellations, because
+under COD a return is the loss vector.
+
+**Where the quality signals come from.** `search-service` fetches them per
+distinct seller on a results page, cached in process for a minute, behind a
+Rule 11 breaker, and every failure resolves to *average*. A search must not
+fail because a metrics service is slow.
+
+That is correct and slower than it should be. D4 describes the quality boost as
+a `function_score` over **indexed** fields, and that is right: the signals
+belong denormalised onto the product documents by the CQRS pipeline so
+Elasticsearch scores them in one query. Doing it in the service is what makes
+the ranking real today rather than in whichever sprint the projection lands.
+
+**Not wired: proximity.** `distance_decay` is implemented and fully tested, and
+nothing calls it with a real distance — seller coordinates are not in the read
+model. Passing `None` makes the decay exactly 1.0, the same as an unlocated
+seller, rather than silently ordering by something else. Wiring it is the same
+projection job as the quality signals.
+
+**Not built: reviews.** There is no reviews service, so `rating` and
+`review_count` are reported as `None` and treated as neutral. Inventing an
+average would put a number into the formula that looks like evidence. This is
+the larger of the two gaps: "products and **reviews** first" is currently
+"products and fulfilment record first".
+
 ## 4. Webhook Deduplication Strategy (4-Layers)
 External PSP webhooks must pass this exact sequence:
 1. HMAC-SHA256 Signature Verification.
@@ -776,8 +852,10 @@ list:**
 13. ~~**`bff-seller`**, the seller dashboard. Sellers must never reach
     internal services directly (Rule 7).~~ ✅ done 2026-08-21 (§3f). Seller
     performance metrics are not built, and they are step 14's input.
-14. **Ranking**: products and reviews first, then proximity — one pipeline,
-    not per-surface sort orders.
+14. ~~**Ranking**: products and reviews first, then proximity — one pipeline,
+    not per-surface sort orders.~~ ✅ done 2026-08-21 as the pipeline (§3g),
+    with two inputs missing: reviews (no service) and proximity (no seller
+    coordinates in the read model). Both are neutral rather than guessed.
 15. **Media Center**, once the marketplace has sellers and orders (§3c).
 
 Observability (§6) and security policy validation (Rule 8) are not steps in

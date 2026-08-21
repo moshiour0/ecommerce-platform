@@ -171,3 +171,13 @@ ledger_rules = load_module(
     "ledger_rules_under_test",
     "services/payment-service/app/services/ledger_rules.py",
 )
+
+ranking_rules = load_module(
+    "ranking_rules_under_test",
+    "services/search-service/app/services/ranking_rules.py",
+)
+
+seller_metrics = load_module(
+    "seller_metrics_under_test",
+    "services/order-saga/app/services/seller_metrics.py",
+)

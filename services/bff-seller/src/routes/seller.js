@@ -175,6 +175,23 @@ router.post('/orders/:sellerOrderId/:action', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// performance
+// ---------------------------------------------------------------------------
+
+// A seller's own fulfilment record -- the same numbers that feed ranking.
+// Shown to them because a metric that decides visibility and is invisible to
+// the person it judges is a metric nobody can act on.
+router.get('/metrics', async (req, res) => {
+  try {
+    const { data } = await orderClient.get(
+      `/orders/seller-metrics?seller_id=${encodeURIComponent(req.sellerId)}`);
+    return res.json(data);
+  } catch (error) {
+    return forwardError(res, error, 'loading your performance');
+  }
+});
+
+// ---------------------------------------------------------------------------
 // money
 // ---------------------------------------------------------------------------
 

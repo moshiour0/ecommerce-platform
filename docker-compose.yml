@@ -122,6 +122,16 @@ services:
       - -c
       - wal_level=logical
       - -c
+      # Sixteen services with a pool each, plus workers and tooling. The
+      # default of 100 was exceeded the first time anything drove real
+      # concurrency: Postgres reached 103 and ten unrelated e2e tests failed
+      # with read timeouts that read like a dozen separate bugs.
+      #
+      # 200 leaves headroom above the 160 the resized pools can open. Idle
+      # connections are cheap; it is work_mem per active query that costs, and
+      # that is unchanged.
+      - max_connections=200
+      - -c
       - max_replication_slots=25
       - -c
       - max_wal_senders=25

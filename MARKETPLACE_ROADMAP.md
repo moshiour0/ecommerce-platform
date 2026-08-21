@@ -586,12 +586,24 @@ an internal service. What they cannot do is mark their own parcel delivered —
 that consumes stock and books escrow, and a seller who could claim it could
 trigger their own payout (ARCHITECTURE_STATE_FINAL.md §3f).
 
-Still open, and named so they are not mistaken for done: nothing executes a
-payout — the ledger records one and clears the liability, but the rails and the
-bank details do not exist; no real courier is configured, so only the
-manual/spreadsheet provider ships; listing enforcement is on creation only;
-refusal-risk scoring is not built; and there are no seller performance metrics,
-which are exactly what ranking needs. Next is ranking — see §7 step 14.
+Ranking closed the list: seller performance is computed from real fulfilment
+history, shrunk so one bad order stays noise, and fed into one scoring pipeline
+(ARCHITECTURE_STATE_FINAL.md §3g). D4's illustrative distance floor of 0.6
+turned out to produce the opposite of the behaviour D4 describes, so the floor
+is now derived from the requirement — see §3g for the arithmetic.
+
+Every step of §7 is done. What is left is what each step deliberately did not
+build, and it is worth reading as a list rather than as a footnote:
+
+- **No reviews service.** "Products and reviews first" is currently "products
+  and fulfilment record first". This is the largest gap.
+- **No proximity in the live pipeline.** The decay is implemented and tested;
+  seller coordinates are not in the read model.
+- **No payout execution.** The ledger records one and clears the liability;
+  the rails and the bank details do not exist.
+- **No real courier configured.** Only the manual/spreadsheet provider ships.
+- **Listing enforcement is creation-only**, and **refusal-risk scoring** is not
+  built.
 
 ---
 

@@ -8,6 +8,7 @@ from ..models import OrderLine, SellerOrder, OrderSagaState, OutboxMessage, Idem
 from ..schemas import CreateOrderRequest, SagaEventRequest
 from .transitions import Outcome, resolve
 from .cod_rules import InventoryEffect, plan_transition
+from .seller_metrics import compute_metrics, quality_inputs
 from .split_rules import (
     EVENT_SELLER_ORDER_CREATED, SplitError, build_seller_order_event,
     derive_order_status, goods_subtotal_cents, is_order_complete,
@@ -554,3 +555,35 @@ async def get_seller_order(db: AsyncSession, seller_order_id):
 
     lines = await _lines_for(db, [seller_order.id])
     return _seller_order_view(seller_order, lines.get(seller_order.id, []))
+
+
+async def seller_performance(db: AsyncSession, seller_id):
+    """One seller's fulfilment record, as ranking consumes it.
+
+    Computed on read rather than maintained as a running counter. A counter
+    would be faster and would drift: every correction, every backfill and every
+    replayed event is a chance for it to disagree with the orders it claims to
+    summarise, and nothing would notice. The seller-order table is indexed on
+    (seller_id, status) and a seller's order count is bounded by their own
+    trade, so the query is cheap enough to leave honest.
+
+    Production would cache this in front rather than behind -- the numbers move
+    slowly and a minute of staleness costs nothing.
+    """
+    result = await db.execute(
+        select(SellerOrder).where(SellerOrder.seller_id == seller_id))
+    seller_orders = [
+        {"status": so.status,
+         "confirmed_at": so.confirmed_at,
+         "dispatched_at": so.dispatched_at}
+        for so in result.scalars().all()
+    ]
+
+    metrics = compute_metrics(seller_orders)
+    return {
+        "seller_id": str(seller_id),
+        **metrics.as_dict(),
+        # The exact shape ranking_rules.quality_boost accepts, so a caller
+        # never has to reshape it and get the key names subtly wrong.
+        "quality": quality_inputs(metrics),
+    }
