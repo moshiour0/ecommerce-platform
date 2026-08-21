@@ -797,6 +797,74 @@ consumer offset — the same defect the Redis volume fixed one layer down.
 *   All external calls must have timeouts. All retry logic must use backoff and jitter.
 *   Transactional Outbox Retention: Every service using the Outbox pattern must implement an automated partition pruning or asynchronous cleanup job that archives `OutboxMessage` records older than 7 days that have been acknowledged by Debezium/Kafka.
 
+### 5c. Outbox retry policy: settle, retry, park (implemented)
+
+A dispatched command had exactly two fates, and that turned out to be one too
+few. It either **settled** — `processed_at` set, never seen again — or its
+claim was **released**, which made it instantly re-claimable. The money paths
+chose release, under the reasoning *"never abandon an unbooked liability"*.
+
+Never abandoning meant never progressing. `CLAIM_SQL` orders by `created_at`,
+so the oldest unprocessed rows are claimed first on every tick. Fourteen escrow
+bookings for sellers that no longer existed — each a permanent 409 — were
+re-served ahead of all live work every two seconds, filled the batch of twenty,
+and saturated the payment-service bulkhead until legitimate bookings were shed.
+
+**The symptom was not an error about sellers.** It was two unrelated end-to-end
+tests failing on assertions about zero, because a live seller's real
+2200-poisha liability was never booked: it sat behind fourteen commands that
+could never succeed and would never stop asking. A queue that cannot advance
+past its own oldest failure presents as everything *except* the thing that is
+broken.
+
+So a failure now has three answers:
+
+| Disposition | Means | Row state |
+|---|---|---|
+| `SETTLE` | Done, or it can never apply and there is nothing to keep | `processed_at` set |
+| `RETRY` | Transient. Try again, *later*, and later grows | `next_attempt_at` set, `attempts` incremented |
+| `PARK` | It will never succeed. Stop claiming it, keep it, be loud | `parked_at` set |
+
+**Parking is not abandoning, and it is deliberately not settling.** A processed
+row is indistinguishable from one that succeeded, so recording an unbooked
+liability as processed would turn a visible problem into a silent one. A parked
+row keeps its payload and its last error and is served by
+`GET :8030/parked` — the retry loop stopping is only an improvement if the
+thing that stopped is visible.
+
+**The classification must be right in both directions**, and the two errors are
+not symmetric:
+
+* Parking something transient discards real money.
+* Retrying something permanent denies service to everything queued behind it —
+  the more insidious failure, because it is invisible at the place it occurs.
+
+`409` is terminal for a *command* and `DEFERRED` for a *saga event*: the same
+number means "I understood and refused" to one caller and "valid, but ask again
+later" to the other. That is why there are two classifiers rather than one
+shared table.
+
+This forced a matching fix in payment-service, which had collapsed every
+non-200 from seller-service into a 409. A seller that 404s is terminal (they do
+not exist, or accepted no contract); seller-service returning 5xx is
+**retryable**, because the rate almost certainly exists and cannot be read.
+Without that split, a thirty-second seller-service outage would have
+permanently parked real liabilities — the new policy would have made the old
+bug worse instead of better.
+
+Backoff doubles from 2s to a 300s cap, with downward-only jitter so a recovered
+dependency does not receive fifty commands in the same millisecond. Fifteen
+attempts is roughly an hour: long enough to outlast a deploy or a failover,
+short enough that a genuinely broken command stops blocking within the hour.
+Load shedding (an open circuit, a full bulkhead) explicitly does **not** consume
+the attempt budget — a command refused because the platform was busy has said
+nothing about whether it can succeed, and letting congestion count toward the
+cap would park real work for being unlucky.
+
+Verified live: on deploy, exactly fourteen commands parked with their 409s
+recorded, the six legitimate bookings behind them completed within one tick, and
+the claimable backlog fell from 45 to 12.
+
 ## 6. Observability Rules
 *   Every service must emit structured JSON logs.
 *   Every request should carry an OpenTelemetry correlation ID.

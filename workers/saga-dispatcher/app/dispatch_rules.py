@@ -228,3 +228,156 @@ def events_emitted() -> frozenset:
 
 def commands_handled() -> frozenset:
     return frozenset(ROUTES)
+
+
+# ---------------------------------------------------------------------------
+# retry policy: what to do with a command that did not succeed
+# ---------------------------------------------------------------------------
+#
+# The header of this module already warns that "not settling something that can
+# never succeed spins forever". That warning was only half-heeded: the saga
+# path got 422/DEAD_LETTERED, and the command paths -- escrow, seller-order
+# stock movements, refunds -- were left with a bare `return False` and the
+# comment "never abandon an unbooked liability".
+#
+# Never abandoning turned out to mean never progressing. A command whose claim
+# is released is immediately re-claimable, and CLAIM_SQL orders by created_at,
+# so the *oldest* failures are claimed first on every tick. Fourteen escrow
+# bookings for sellers that no longer exist -- each one a permanent 409 -- were
+# re-claimed ahead of all live work every two seconds, filled a batch of
+# twenty, and saturated the payment-service bulkhead until legitimate bookings
+# were shed. Measured on a real run: a live seller's 2200-poisha liability was
+# never booked, because fourteen dead ones were ahead of it in the queue.
+#
+# So a failure needs three answers, not two:
+#
+#   SETTLE -- done, or it can never apply and there is nothing to keep.
+#   RETRY  -- transient. Try again, but *later*, and later must grow.
+#   PARK   -- it will never succeed. Stop claiming it, keep it, and make it
+#             loud. Parking is not abandoning: the row, its payload and its
+#             last error stay on the outbox where a person can find them.
+#
+# The distinction between RETRY and PARK is worth being careful about in both
+# directions. Parking something transient discards real money. Retrying
+# something permanent denies service to everything behind it -- which is the
+# more insidious failure, because it presents as unrelated tests timing out
+# rather than as an error about the thing that is actually broken.
+
+
+class Disposition(str, Enum):
+    """What should happen to a command after an attempt."""
+
+    SETTLE = "settle"  # mark processed; never claimed again
+    RETRY = "retry"    # stays claimable, but not before next_attempt_at
+    PARK = "park"      # stops being claimed; kept and surfaced for a human
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """The result of attempting one command."""
+
+    disposition: Disposition
+    error: Optional[str] = None
+
+    @property
+    def settled(self) -> bool:
+        """Whether the dispatcher is finished with this row.
+
+        Parked rows are finished in the sense that nothing will retry them,
+        but they are deliberately *not* marked processed: a processed row is
+        indistinguishable from one that succeeded, and an unbooked liability
+        must never look like a booked one.
+        """
+        return self.disposition is Disposition.SETTLE
+
+
+SETTLED = Outcome(Disposition.SETTLE)
+
+
+def retry(error: str) -> Outcome:
+    return Outcome(Disposition.RETRY, error)
+
+
+def park(error: str) -> Outcome:
+    return Outcome(Disposition.PARK, error)
+
+
+# A downstream that answered with one of these has understood the request and
+# refused it. Refusals do not become acceptances by being repeated.
+#
+# 409 is on this list for commands and deliberately NOT for saga events, where
+# it means "valid but out of order, ask again". The same number means opposite
+# things to the two callers, which is exactly why these are two functions
+# rather than one shared table.
+TERMINAL_COMMAND_STATUSES = frozenset({400, 404, 409, 410, 422})
+
+# Overload and transport faults. The downstream never formed an opinion.
+RETRYABLE_COMMAND_STATUSES = frozenset({408, 425, 429})
+
+
+def classify_command_failure(status_code: Optional[int]) -> Disposition:
+    """Decide what a failed downstream call earns.
+
+    Unknown is retryable on purpose. A status nobody anticipated is not
+    evidence that the work is impossible, and the cap on attempts below means
+    "retry" can no longer mean "forever" -- so the conservative answer is now
+    safe to give. It was not safe before this cap existed, which is how the
+    bare `return False` came to be written.
+    """
+    if status_code is None:
+        return Disposition.RETRY  # transport fault; nothing was answered
+    if 200 <= status_code < 300:
+        return Disposition.SETTLE
+    if status_code in RETRYABLE_COMMAND_STATUSES:
+        return Disposition.RETRY
+    if status_code >= 500:
+        return Disposition.RETRY
+    if status_code in TERMINAL_COMMAND_STATUSES:
+        return Disposition.PARK
+    return Disposition.RETRY
+
+
+# Retry pacing. Doubling from two seconds, capped at five minutes, gives
+# roughly fifty minutes of trying across MAX_ATTEMPTS before a command parks.
+# That is long enough to outlast a deploy, a failover or a slow migration, and
+# short enough that a genuinely broken command stops blocking within the hour.
+RETRY_BASE_SECONDS = 2.0
+RETRY_CAP_SECONDS = 300.0
+MAX_ATTEMPTS = 15
+
+
+def backoff_seconds(attempts: int,
+                    base: float = RETRY_BASE_SECONDS,
+                    cap: float = RETRY_CAP_SECONDS,
+                    jitter: float = 0.0) -> float:
+    """How long before this command may be claimed again.
+
+    `jitter` is a caller-supplied fraction in [0, 1) rather than a random draw,
+    so this function stays pure and testable. main.py passes random.random().
+    Without it, a downstream that drops fifty commands at once gets all fifty
+    back in the same millisecond, and the recovery attempt is itself the second
+    outage.
+    """
+    if attempts < 1:
+        raise ValueError(f"attempts starts at 1, got {attempts}")
+    if not 0.0 <= jitter < 1.0:
+        raise ValueError(f"jitter must be within [0, 1), got {jitter}")
+
+    delay = min(cap, base * (2 ** (attempts - 1)))
+    # Jitter spreads downward only. Spreading upward would let the cap be
+    # exceeded, and the cap is the promise that a retry always comes.
+    return delay * (1.0 - 0.5 * jitter)
+
+
+def disposition_after(outcome_disposition: Disposition, attempts: int,
+                      max_attempts: int = MAX_ATTEMPTS) -> Disposition:
+    """Apply the attempt cap to a retry.
+
+    A command that has been retried MAX_ATTEMPTS times has had its hour. It
+    parks -- not because the platform has decided it is impossible, but because
+    the evidence is now indistinguishable from impossible, and the cost of
+    continuing to guess is paid by every command queued behind it.
+    """
+    if outcome_disposition is Disposition.RETRY and attempts >= max_attempts:
+        return Disposition.PARK
+    return outcome_disposition

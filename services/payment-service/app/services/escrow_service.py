@@ -75,11 +75,33 @@ async def _commission_for(seller_id) -> dict:
             detail=f"seller-service unreachable ({type(e).__name__}); "
                    f"refusing to book escrow at a guessed rate") from e
 
-    if response.status_code != 200:
+    # Two different failures hide behind "not 200", and collapsing them into
+    # one status is expensive now that the dispatcher acts on the difference.
+    #
+    #   404 -- seller-service answered, and this seller has no commission rate:
+    #          they do not exist, or never accepted a contract. Repetition will
+    #          not conjure one. Terminal, so the command parks and is seen.
+    #   5xx -- seller-service is broken, not authoritative. Retryable, because
+    #          the rate almost certainly exists and we simply cannot read it.
+    #
+    # Returning 409 for both, as this did, would let a thirty-second outage in
+    # seller-service permanently park real liabilities: the dispatcher would
+    # read "the downstream refused" where the truth was "the downstream fell
+    # over". Anything unexpected is treated as retryable for the same reason --
+    # money is not written off on a status nobody anticipated.
+    if response.status_code == 404:
         raise HTTPException(
             status_code=409,
             detail=f"no commission rate for seller {seller_id}: "
-                   f"seller-service returned {response.status_code}")
+                   f"seller-service returned 404. Either the seller does not "
+                   f"exist or they have accepted no contract; escrow cannot "
+                   f"be booked at a guessed rate.")
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=503,
+            detail=f"seller-service returned {response.status_code} for "
+                   f"seller {seller_id}; refusing to book escrow at a guessed "
+                   f"rate, and this is retryable rather than final")
     return response.json()
 
 

@@ -35,6 +35,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import socket
 
 import asyncpg
@@ -51,6 +52,8 @@ from python_common.tracing import get_tracer, setup_tracing, start_consumer_span
 from .dispatch_rules import (
     plan_item_reservations, reservation_idempotency_key,
     SagaAck, classify_saga_response, route_for, settles,
+    Disposition, Outcome, SETTLED, retry, park,
+    backoff_seconds, classify_command_failure, disposition_after, MAX_ATTEMPTS,
 )
 
 logger = logging.getLogger()
@@ -96,7 +99,24 @@ _pool: asyncpg.Pool | None = None
 _client: httpx.AsyncClient | None = None
 _dispatch_task: asyncio.Task | None = None
 _stats = {"claimed": 0, "advanced": 0, "deferred": 0, "dead_lettered": 0,
-          "short_circuited": 0, "errors": 0, "reclaimed": 0}
+          "short_circuited": 0, "errors": 0, "reclaimed": 0,
+          # A non-zero "parked" is not a statistic, it is a work queue: each
+          # one is an effect the platform intended and could not achieve.
+          "parked": 0, "deferred_backoff": 0}
+
+
+def _from_status(status_code: int, error: str) -> Outcome:
+    """Turn a downstream status into a disposition.
+
+    The decision lives in dispatch_rules so it can be tested against every
+    status without a downstream to answer. Here it is only applied.
+    """
+    disposition = classify_command_failure(status_code)
+    if disposition is Disposition.SETTLE:
+        return SETTLED
+    if disposition is Disposition.PARK:
+        return park(error)
+    return retry(error)
 
 
 # --------------------------------------------------------------------------
@@ -113,6 +133,14 @@ WITH claimable AS (
     -- every event was published, and not one unit ever moved.
     WHERE aggregate_type IN ('OrderSaga', 'SellerOrder')
       AND processed_at IS NULL
+      -- Parked: tried until the evidence said it never will. Kept on the
+      -- table and out of the queue. Without this the row is re-claimed every
+      -- tick and, because of the ORDER BY below, ahead of all live work.
+      AND parked_at IS NULL
+      -- Backing off. This is the clause that ends head-of-line blocking: a
+      -- failing row leaves the batch for a growing interval instead of
+      -- refilling it, so the commands behind it get their turn.
+      AND (next_attempt_at IS NULL OR next_attempt_at <= NOW())
       AND (type LIKE '%Command' OR type = 'SagaTimedOut')
       AND (claimed_at IS NULL
            OR claimed_at < NOW() - make_interval(secs => $2))
@@ -124,7 +152,8 @@ UPDATE outbox_messages o
 SET claimed_at = NOW(), claimed_by = $3
 FROM claimable c
 WHERE o.id = c.id
-RETURNING o.id, o.type, o.payload, o.claimed_by IS DISTINCT FROM $3 AS was_stale;
+RETURNING o.id, o.type, o.payload, o.attempts,
+          o.claimed_by IS DISTINCT FROM $3 AS was_stale;
 """
 
 
@@ -140,11 +169,47 @@ async def mark_processed(pool: asyncpg.Pool, msg_id) -> None:
     await pool.execute("UPDATE outbox_messages SET processed_at = NOW() WHERE id = $1", msg_id)
 
 
-async def release_claim(pool: asyncpg.Pool, msg_id) -> None:
-    """Hand the command back so the next tick retries it immediately."""
+async def defer_claim(pool: asyncpg.Pool, msg_id, delay_seconds: float,
+                      error: str | None, count_attempt: bool = True) -> None:
+    """Hand the command back, but not before `delay_seconds` have passed.
+
+    This replaced an unconditional release. Releasing made the row instantly
+    re-claimable, and since the claim is ordered by created_at the same failing
+    rows were re-served first on every tick -- a queue that could not advance
+    past its own oldest failure.
+    """
     await pool.execute(
-        "UPDATE outbox_messages SET claimed_at = NULL, claimed_by = NULL WHERE id = $1",
-        msg_id,
+        """
+        UPDATE outbox_messages
+        SET claimed_at = NULL, claimed_by = NULL,
+            attempts = attempts + $4,
+            next_attempt_at = NOW() + make_interval(secs => $2),
+            last_error = $3
+        WHERE id = $1
+        """,
+        msg_id, float(delay_seconds), (error or "")[:500],
+        1 if count_attempt else 0,
+    )
+
+
+async def park_claim(pool: asyncpg.Pool, msg_id, error: str | None) -> None:
+    """Stop retrying, and keep the row where a person can find it.
+
+    Deliberately not `processed_at`. A processed row is indistinguishable from
+    one that succeeded, and the whole point of parking an escrow booking is
+    that the money was *not* booked -- recording it as processed would turn a
+    visible problem into a silent one.
+    """
+    await pool.execute(
+        """
+        UPDATE outbox_messages
+        SET claimed_at = NULL, claimed_by = NULL,
+            attempts = attempts + 1,
+            parked_at = NOW(),
+            last_error = $2
+        WHERE id = $1
+        """,
+        msg_id, (error or "")[:500],
     )
 
 
@@ -188,8 +253,8 @@ async def _post(target: str, url: str, payload: dict, idem_key: str) -> httpx.Re
 
 
 async def _advance_saga(order_id: str, event_type: str, idem_key: str,
-                        payload: dict | None = None) -> bool:
-    """Feed a result into the state machine. True when the command is settled.
+                        payload: dict | None = None) -> Outcome:
+    """Feed a result into the state machine.
 
     The saga distinguishes three outcomes and they must not be collapsed:
       409 -- known event, not applicable yet (out-of-order). Retry later.
@@ -217,14 +282,20 @@ async def _advance_saga(order_id: str, event_type: str, idem_key: str,
         _stats["errors"] += 1
         logger.error(f"Saga rejected event: order={order_id} event={event_type} "
                      f"status={res.status_code}")
-    return settles(ack)
+    # The saga's own vocabulary already separates "not yet" from "never", so
+    # this maps onto dispositions rather than re-deciding: DEAD_LETTERED is a
+    # settle because the saga has definitively rejected the event and keeping
+    # it would be keeping a row nothing can ever act on.
+    if settles(ack):
+        return SETTLED
+    return retry(f"saga answered {res.status_code} to {event_type}")
 
 
-async def handle(msg_id, msg_type: str, payload: dict) -> bool:
+async def handle(msg_id, msg_type: str, payload: dict) -> Outcome:
     order_id = payload.get("order_id")
     if not order_id:
         logger.error(f"Command {msg_type} ({msg_id}) has no order_id; cannot correlate")
-        return True  # unroutable forever — settle rather than spin
+        return SETTLED  # unroutable forever -- settle rather than spin
 
     idem = str(msg_id)
 
@@ -272,7 +343,8 @@ async def handle(msg_id, msg_type: str, payload: dict) -> bool:
                 logger.error(
                     f"Could not release partial reservation for order={order_id} "
                     f"(status={rollback.status_code}); leaving command unsettled")
-                return False
+                return retry(f"partial reservation release returned "
+                             f"{rollback.status_code}")
 
             return await _advance_saga(order_id, "InventoryReservationFailed",
                                        f"inv-fail-{msg_id}",
@@ -303,7 +375,11 @@ async def handle(msg_id, msg_type: str, payload: dict) -> bool:
         if res.status_code == 200:
             return await _advance_saga(order_id, "PaymentRefunded", f"pay-ref-{msg_id}")
         logger.error(f"Refund failed: order={order_id} status={res.status_code}")
-        return False  # never abandon an outstanding refund
+        # Classified rather than retried blindly. A refund the provider
+        # refuses outright is not made to happen by asking again, and asking
+        # forever is what pushes every other command out of the batch.
+        return _from_status(res.status_code,
+                            f"refund returned {res.status_code}")
 
     if msg_type in ("ReleaseInventoryCommand", "CompensateInventoryCommand"):
         # inventory-service treats an order holding nothing as a no-op and
@@ -319,7 +395,8 @@ async def handle(msg_id, msg_type: str, payload: dict) -> bool:
             return await _advance_saga(order_id, "InventoryReleased", f"inv-rel-{msg_id}")
         logger.error(f"Inventory release failed: order={order_id} "
                      f"status={res.status_code}")
-        return False  # never abandon an outstanding release
+        return _from_status(res.status_code,
+                            f"release returned {res.status_code}")
 
     # Seller-order scoped, and deliberately NOT advancing the parent saga.
     # These belong to one seller's part of a split order; advancing the whole
@@ -338,10 +415,12 @@ async def handle(msg_id, msg_type: str, payload: dict) -> bool:
         if res.status_code == 200:
             logger.info(f"{endpoint} for seller order "
                         f"{payload.get('seller_order_id')}: {res.status_code}")
-            return True
+            return SETTLED
         logger.error(f"Seller order inventory {endpoint} failed: "
                      f"order={order_id} status={res.status_code}")
-        return False  # never abandon an outstanding stock movement
+        return _from_status(res.status_code,
+                            f"seller order inventory {endpoint} returned "
+                            f"{res.status_code}")
 
     if msg_type == "BookEscrowDeliveryCommand":
         # Seller-order scoped, so it must not advance the parent saga.
@@ -356,20 +435,26 @@ async def handle(msg_id, msg_type: str, payload: dict) -> bool:
         if res.status_code == 200:
             logger.info(f"escrow booked for seller order "
                         f"{payload.get('seller_order_id')}")
-            return True
+            return SETTLED
         logger.error(f"Escrow booking failed: order={order_id} "
                      f"status={res.status_code} {res.text[:200]}")
-        return False  # never abandon an unbooked liability
+        # An unbooked liability is never silently dropped -- but a booking
+        # payment-service refuses outright (409: the seller has no commission
+        # rate because they do not exist) is not made to succeed by repetition.
+        # It parks, loudly, still on the outbox with its payload and its error.
+        return _from_status(res.status_code,
+                            f"escrow booking returned {res.status_code}: "
+                            f"{res.text[:160]}")
 
     if msg_type == "ConfirmOrderCommand":
         return await _advance_saga(order_id, "OrderCompleted", f"ord-cmp-{msg_id}")
 
     if msg_type == "SagaTimedOut":
         logger.warning(f"Saga timed out with no compensation required: order={order_id}")
-        return True
+        return SETTLED
 
     logger.error(f"Unknown command type {msg_type} for order={order_id}; settling")
-    return True
+    return SETTLED
 
 
 def order_id_of(payload: dict) -> str | None:
@@ -404,25 +489,55 @@ async def process_one(pool: asyncpg.Pool, row) -> bool:
            "saga.command": msg_type,
            "messaging.message_id": str(msg_id)},
     ):
+        shed = False
         try:
-            settled = await handle(msg_id, msg_type, payload)
+            outcome = await handle(msg_id, msg_type, payload)
         except (CircuitOpenError, BulkheadFullError) as exc:
-            # Shed load without consuming a retry budget: the command goes back
-            # on the queue untouched and the next tick tries again.
+            # Shed load without consuming a retry budget. A command refused
+            # because the platform was busy has told us nothing about whether
+            # it can succeed, and letting congestion count toward the attempt
+            # cap would park real work for being unlucky.
             _stats["short_circuited"] += 1
             logger.warning(f"Shedding {msg_type} ({msg_id}): {exc}")
-            settled = False
+            outcome = retry(f"shed: {exc}")
+            shed = True
         except Exception as exc:
             _stats["errors"] += 1
             logger.error(f"Command {msg_type} ({msg_id}) raised: {exc}")
-            settled = False
+            outcome = retry(f"{type(exc).__name__}: {exc}")
 
-    if settled:
+    if outcome.settled:
         await mark_processed(pool, msg_id)
-    else:
-        await forget_processed_event(pool, msg_id)
-        await release_claim(pool, msg_id)
-    return settled
+        return True
+
+    # Not settled: the effect did not happen, so the idempotency record has to
+    # go or the retry would be answered with a cached success.
+    await forget_processed_event(pool, msg_id)
+
+    attempts = (row["attempts"] or 0) + (0 if shed else 1)
+    disposition = disposition_after(outcome.disposition, attempts)
+
+    if disposition is Disposition.PARK:
+        _stats["parked"] += 1
+        # Loud, because parking an escrow booking means a seller is owed money
+        # the ledger does not know about. This is the line that should page
+        # someone; it is not a routine retry.
+        logger.error(
+            f"PARKED {msg_type} ({msg_id}) after {attempts} attempt(s): "
+            f"{outcome.error}. It will not be retried and is not marked "
+            f"processed; it stays on the outbox for inspection.")
+        await park_claim(pool, msg_id, outcome.error)
+        # Parking is progress: the row has left the queue, so the drain loop
+        # should carry on and give whatever was stuck behind it a turn.
+        return True
+
+    delay = backoff_seconds(max(1, attempts), jitter=random.random())
+    _stats["deferred_backoff"] += 1
+    logger.warning(
+        f"Retrying {msg_type} ({msg_id}) in {delay:.1f}s "
+        f"(attempt {attempts}/{MAX_ATTEMPTS}): {outcome.error}")
+    await defer_claim(pool, msg_id, delay, outcome.error, count_attempt=not shed)
+    return False
 
 
 async def dispatch_loop() -> None:
@@ -492,3 +607,47 @@ async def health():
 @app.get("/metrics")
 async def metrics():
     return {**_stats, "breakers": [b.stats() for b in breakers.values()]}
+
+
+@app.get("/parked")
+async def parked(limit: int = 50):
+    """Commands that were tried until the evidence said they never would work.
+
+    This endpoint is the other half of parking. Stopping the retry loop is only
+    an improvement if the thing that stopped is visible -- otherwise it is the
+    same silent loss as settling, just slower to notice. Each row here is an
+    effect the platform intended and did not achieve, with the payload it would
+    have sent and the last thing the downstream said about it.
+
+    In-process counters reset when this worker restarts; the table does not,
+    which is why the counts are read from Postgres rather than from _stats.
+    """
+    rows = await _pool.fetch(
+        """
+        SELECT id, type, aggregate_id, attempts, parked_at, last_error, payload
+        FROM outbox_messages
+        WHERE parked_at IS NOT NULL
+        ORDER BY parked_at DESC
+        LIMIT $1
+        """, limit)
+    total = await _pool.fetchval(
+        "SELECT count(*) FROM outbox_messages WHERE parked_at IS NOT NULL")
+    backlog = await _pool.fetchval(
+        """
+        SELECT count(*) FROM outbox_messages
+        WHERE processed_at IS NULL AND parked_at IS NULL
+          AND (type LIKE '%Command' OR type = 'SagaTimedOut')
+        """)
+    return {
+        "parked_total": total,
+        "claimable_backlog": backlog,
+        "parked": [
+            {"id": str(r["id"]), "type": r["type"],
+             "aggregate_id": r["aggregate_id"], "attempts": r["attempts"],
+             "parked_at": r["parked_at"].isoformat() if r["parked_at"] else None,
+             "last_error": r["last_error"],
+             "payload": json.loads(r["payload"]) if isinstance(r["payload"], str)
+                        else r["payload"]}
+            for r in rows
+        ],
+    }

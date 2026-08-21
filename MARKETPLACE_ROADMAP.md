@@ -602,6 +602,12 @@ build, and it is worth reading as a list rather than as a footnote:
 - **No payout execution.** The ledger records one and clears the liability;
   the rails and the bank details do not exist.
 - **No real courier configured.** Only the manual/spreadsheet provider ships.
+- **Orders can be created for sellers who do not exist.** Rule 1 means
+  catalog holds `seller_id` with no foreign key, and listing enforcement
+  arrived later than the data — so historical products carry seller ids
+  that seller-service has never heard of. Their escrow bookings now park
+  visibly (ARCHITECTURE_STATE_FINAL.md §5c) rather than blocking the
+  queue, but nothing yet reconciles catalog against seller-service.
 - **Listing enforcement is creation-only**, and **refusal-risk scoring** is not
   built.
 

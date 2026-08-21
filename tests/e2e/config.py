@@ -100,6 +100,23 @@ def _override(service: str):
     return os.getenv("E2E_URL_" + service.upper().replace("-", "_"))
 
 
+# The seller seeded by migration 015: real, ACTIVE, contract v1 accepted.
+#
+# Tests that need *an* order but do not care whose used to mint a random UUID
+# for seller_id. Nothing rejected it -- Rule 1 means catalog and order hold
+# seller_id with no foreign key -- so those orders reached DELIVERED and emitted
+# an escrow booking for a seller who had never existed. Each one was a
+# permanent 409 that the dispatcher retried forever, and fourteen of them
+# eventually filled the claim batch and starved real bookings out of the queue
+# (ARCHITECTURE_STATE_FINAL.md §5c).
+#
+# The dispatcher now parks such commands instead of spinning on them, which is
+# the real fix. This constant fixes the other half: a parked queue that always
+# contains three fresh pieces of junk after every suite run is a parked queue
+# nobody will read, and the whole point of parking was visibility.
+PLATFORM_SELLER_ID = "00000000-0000-0000-0000-000000000001"
+
+
 def service_url(service: str) -> str:
     """Base URL for a service, e.g. http://localhost:8005 -- no trailing slash."""
     explicit = _override(service)

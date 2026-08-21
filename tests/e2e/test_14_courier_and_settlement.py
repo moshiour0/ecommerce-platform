@@ -33,7 +33,7 @@ import uuid
 import asyncpg
 import httpx
 
-from config import db_url, describe, service_url
+from config import PLATFORM_SELLER_ID, db_url, describe, service_url
 
 SAGA_URL = service_url("order-saga") + "/orders"
 FULFILMENT = service_url("fulfillment-service")
@@ -97,7 +97,7 @@ async def place_confirmed_order(client, units, unit_price=1250):
         "user_id": str(uuid.uuid4()),
         "total_cents": units * unit_price,
         "items_payload": [{
-            "product_id": product_id, "seller_id": str(uuid.uuid4()),
+            "product_id": product_id, "seller_id": PLATFORM_SELLER_ID,
             "quantity": units, "price_cents": unit_price,
             "line_total_cents": units * unit_price,
         }],
