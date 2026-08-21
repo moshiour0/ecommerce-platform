@@ -6,7 +6,7 @@ import asyncio
 import asyncpg
 import os
 
-from config import service_url, db_url, describe, ELASTICSEARCH_URL
+from config import ELASTICSEARCH_URL, connect_with_retry, db_url, describe, new_client, service_url
 
 # Service URLs
 CART_URL = service_url("cart-service") + "/cart"
@@ -33,7 +33,7 @@ async def main():
         category_id = str(uuid.uuid4())
         
         try:
-            conn = await asyncpg.connect(DB_URL)
+            conn = await connect_with_retry(DB_URL)
             await conn.execute(
                 "INSERT INTO categories (id, name, description) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
                 category_id, "Keyboards", "E2E Testing Phase"
@@ -43,7 +43,7 @@ async def main():
             print(f"   [!] Database Setup Failed: {e}")
             sys.exit(1)
 
-        async with httpx.AsyncClient() as client:
+        async with new_client() as client:
             try:
                 prod_res = await client.post(
                     f"{CATALOG_URL}/",
@@ -83,7 +83,7 @@ async def main():
                 # product — a testing backdoor that made a flash sale
                 # unsellout-able and was correctly removed (C-2). A test must
                 # arrange its own fixtures, not depend on a production bypass.
-                inv_conn = await asyncpg.connect(INVENTORY_DB_URL)
+                inv_conn = await connect_with_retry(INVENTORY_DB_URL)
                 try:
                     await inv_conn.execute(
                         """INSERT INTO inventory_items
@@ -138,7 +138,7 @@ async def main():
                     
                     print("\n3. Saga is now executing downstream distributed transactions...")
                     print("   Polling Postgres database directly to verify completion...")
-                    poll_conn = await asyncpg.connect(db_url("order_db"))
+                    poll_conn = await connect_with_retry(db_url("order_db"))
                     try:
                         for attempt in range(1, 16):
                             await asyncio.sleep(2)

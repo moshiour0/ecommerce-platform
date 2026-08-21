@@ -5,7 +5,7 @@ import sys
 import json
 import os
 
-from config import service_url, db_url, describe, ELASTICSEARCH_URL
+from config import ELASTICSEARCH_URL, db_url, describe, new_client, service_url
 
 # Windows consoles default to cp1252, which cannot encode the non-ASCII
 # characters in this file's output. Without this the test dies with
@@ -36,7 +36,7 @@ async def main():
         
     print(f"🎯 Target Product ID: {product_id}\n")
 
-    async with httpx.AsyncClient() as client:
+    async with new_client() as client:
         # 1. Update Price
         print("1. Sending Price Update (15,000 cents / $150.00)...")
         price_headers = {"Idempotency-Key": str(uuid.uuid4())}

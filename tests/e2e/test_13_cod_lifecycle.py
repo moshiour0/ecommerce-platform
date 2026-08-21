@@ -35,7 +35,7 @@ import uuid
 import asyncpg
 import httpx
 
-from config import PLATFORM_SELLER_ID, db_url, describe, service_url
+from config import PLATFORM_SELLER_ID, connect_with_retry, db_url, describe, new_client, service_url
 
 SAGA_URL = service_url("order-saga") + "/orders"
 
@@ -50,7 +50,7 @@ def check(condition, ok_message, fail_message):
 
 
 async def stock(product_id):
-    conn = await asyncpg.connect(db_url("inventory_db"))
+    conn = await connect_with_retry(db_url("inventory_db"))
     try:
         row = await conn.fetchrow(
             "SELECT quantity_available, quantity_reserved FROM inventory_items "
@@ -62,7 +62,7 @@ async def stock(product_id):
 
 
 async def seed_stock(product_id, units):
-    conn = await asyncpg.connect(db_url("inventory_db"))
+    conn = await connect_with_retry(db_url("inventory_db"))
     try:
         await conn.execute(
             """INSERT INTO inventory_items
@@ -77,7 +77,7 @@ async def seed_stock(product_id, units):
 
 
 async def charge_commands(order_id):
-    conn = await asyncpg.connect(db_url("order_db"))
+    conn = await connect_with_retry(db_url("order_db"))
     try:
         return await conn.fetchval(
             "SELECT count(*) FROM outbox_messages "
@@ -141,7 +141,7 @@ async def main():
     print("=" * 62)
     print(f"-> {describe()}")
 
-    async with httpx.AsyncClient() as client:
+    async with new_client() as client:
 
         # -------------------------------------------------------------- A
         print("\n1. Placing a COD order (3 units)...")
@@ -288,7 +288,7 @@ async def main():
         # them may still be holding units. This is the leak the lifecycle was
         # written to close: before it, a delivered order's reservation stayed
         # 'held' forever and quantity_reserved only ever grew.
-        conn = await asyncpg.connect(db_url("inventory_db"))
+        conn = await connect_with_retry(db_url("inventory_db"))
         try:
             still_held = await conn.fetchval(
                 "SELECT count(*) FROM inventory_reservations "

@@ -33,7 +33,7 @@ import uuid
 import asyncpg
 import httpx
 
-from config import db_url, describe, service_url
+from config import connect_with_retry, db_url, describe, new_client, service_url
 
 SELLER_URL = service_url("seller-service") + "/sellers"
 SAGA_URL = service_url("order-saga") + "/orders"
@@ -59,7 +59,7 @@ _connections = {}
 
 async def db(database):
     if database not in _connections:
-        _connections[database] = await asyncpg.connect(db_url(database))
+        _connections[database] = await connect_with_retry(db_url(database))
     return _connections[database]
 
 
@@ -149,7 +149,7 @@ async def main():
     print("=" * 62)
     print(f"-> {describe()}")
 
-    async with httpx.AsyncClient() as client:
+    async with new_client() as client:
 
         print("\n1. A seller with no history sits at the prior...")
         fresh = await onboard(client, f"Fresh {uuid.uuid4().hex[:4]}")

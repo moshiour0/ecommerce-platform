@@ -28,7 +28,7 @@ import sys
 
 import httpx
 
-from config import describe, mesh_exec_prefix, redis_primary_service, service_url
+from config import describe, mesh_exec_prefix, new_client, redis_primary_service, service_url
 
 GATEWAY = service_url("api-gateway")
 # Unrouted on purpose: it stops at the gateway's own 404 handler, so exhausting
@@ -62,7 +62,7 @@ async def main():
     print("=" * 62)
     print(f"-> {describe()}")
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with new_client(timeout=15.0) as client:
 
         print("\n1. Spending the read budget...")
         # Generously more than the budget: this source may have spent some of

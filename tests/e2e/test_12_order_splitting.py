@@ -29,7 +29,7 @@ import uuid
 import asyncpg
 import httpx
 
-from config import db_url, describe, service_url
+from config import connect_with_retry, db_url, describe, new_client, service_url
 
 CATALOG_URL = service_url("catalog-service") + "/products"
 PRICING_URL = service_url("pricing-service") + "/prices"
@@ -104,7 +104,7 @@ async def seed_product(client, seller_id, category_id, name, price_cents):
             if attempt == 1:
                 print(f"      [!] pricing seed failed for {product_id}: {e}")
 
-    conn = await asyncpg.connect(db_url("inventory_db"))
+    conn = await connect_with_retry(db_url("inventory_db"))
     try:
         await conn.execute(
             """INSERT INTO inventory_items
@@ -124,7 +124,7 @@ async def main():
     print("=" * 62)
     print(f"-> {describe()}")
 
-    conn = await asyncpg.connect(db_url("catalog_db"))
+    conn = await connect_with_retry(db_url("catalog_db"))
     try:
         row = await conn.fetchrow("SELECT id FROM categories LIMIT 1")
     finally:
@@ -134,7 +134,7 @@ async def main():
         return 1
     category_id = str(row["id"])
 
-    async with httpx.AsyncClient() as client:
+    async with new_client() as client:
         print("\n1. Onboarding two sellers...")
         seller_a = await onboard_seller(client, f"Split A {uuid.uuid4().hex[:4]}")
         seller_b = await onboard_seller(client, f"Split B {uuid.uuid4().hex[:4]}")
@@ -252,7 +252,7 @@ async def main():
               "a brand new order reported itself complete")
 
         print("\n8. Checking every seller order left an event...")
-        conn = await asyncpg.connect(db_url("order_db"))
+        conn = await connect_with_retry(db_url("order_db"))
         try:
             rows = await conn.fetch(
                 "SELECT payload->>'seller_id' AS seller_id, "

@@ -33,7 +33,7 @@ import uuid
 import asyncpg
 import httpx
 
-from config import PLATFORM_SELLER_ID, db_url, describe, service_url
+from config import PLATFORM_SELLER_ID, connect_with_retry, db_url, describe, new_client, service_url
 
 SAGA_URL = service_url("order-saga") + "/orders"
 FULFILMENT = service_url("fulfillment-service")
@@ -60,7 +60,7 @@ _connections = {}
 
 async def db(database):
     if database not in _connections:
-        _connections[database] = await asyncpg.connect(db_url(database))
+        _connections[database] = await connect_with_retry(db_url(database))
     return _connections[database]
 
 
@@ -146,7 +146,7 @@ async def main():
     print("=" * 62)
     print(f"-> {describe()}")
 
-    async with httpx.AsyncClient() as client:
+    async with new_client() as client:
 
         print("\n1. Which couriers are configured...")
         res = await client.get(f"{FULFILMENT}/couriers", timeout=30.0)

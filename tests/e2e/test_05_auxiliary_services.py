@@ -2,7 +2,7 @@ import asyncio
 import httpx
 import sys
 
-from config import service_url, describe
+from config import describe, new_client, service_url
 
 # Define auxiliary services and their mapped ports from docker-compose.apps.yml
 AUX_SERVICES = {name: service_url(name) for name in (
@@ -37,7 +37,7 @@ async def main():
     print("==================================================")
     
     all_passed = True
-    async with httpx.AsyncClient() as client:
+    async with new_client() as client:
         for name, url in AUX_SERVICES.items():
             success = await check_health(client, name, url)
             if not success:

@@ -6,7 +6,7 @@ import asyncio
 import asyncpg
 import os
 
-from config import service_url, db_url, describe, ELASTICSEARCH_URL
+from config import ELASTICSEARCH_URL, connect_with_retry, db_url, describe, new_client, service_url
 
 BFF_SHOP_URL = service_url("bff-shop")
 CATALOG_URL = service_url("catalog-service")
@@ -21,7 +21,7 @@ async def setup_category():
     print("0. Enforcing Foreign Key Integrity (Inserting Category)...")
     conn = None
     try:
-        conn = await asyncpg.connect(DB_URL)
+        conn = await connect_with_retry(DB_URL)
         await conn.execute(
             "INSERT INTO categories (id, name, description) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
             category_id, "Keyboards", "High performance gear"
@@ -43,7 +43,7 @@ async def check_infrastructure(client: httpx.AsyncClient):
         print("Elasticsearch: OFFLINE OR UNREACHABLE (Is port 9200 open/running?)")
 
 async def run_test():
-    async with httpx.AsyncClient() as client:
+    async with new_client() as client:
         await check_infrastructure(client)
         
         product_id = str(uuid.uuid4())

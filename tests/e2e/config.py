@@ -230,3 +230,154 @@ def redis_primary_service(default: str = "redis") -> str:
         if result.stdout.strip() and result.stdout.strip() == address:
             return node
     return default
+
+
+# ---------------------------------------------------------------------------
+# a client that survives the machine it runs on
+# ---------------------------------------------------------------------------
+#
+# Across four consecutive full-suite runs a *different* test failed each time,
+# always with a transport error -- httpx.ReadError, httpx.ReadTimeout, or
+# [WinError 64] "the specified network name is no longer available" -- and
+# always passing when run on its own. Never an assertion. Never a wrong value.
+#
+# It is not the platform. One full run makes several thousand HTTP calls over
+# about five minutes, and Docker Desktop on Windows drops published-port
+# connections when the host is short of memory. A small per-call probability
+# across thousands of calls is a near-certainty that *something* somewhere
+# fails, which is why no single run came back clean while every individual test
+# passed.
+#
+# The cost is not the red line. It is that a red suite stopped meaning "the
+# platform is broken" and started meaning "the laptop hiccuped", and three
+# separate real results were obscured by it in one day.
+#
+# So transport failures are retried and nothing else is. Specifically NOT
+# retried:
+#
+#   * any HTTP status. A 500 is a real answer and the tests exist to see it.
+#     Retrying until green is how a suite starts lying.
+#   * assertion failures, which never reach this layer.
+#
+# This covers HTTP only. The suite also opens raw Postgres connections, and
+# those turned out to be where both observed WinError 64s actually landed --
+# see connect_with_retry below.
+
+import httpx as _httpx
+
+# Retried only for methods that can be repeated safely. GET/HEAD/OPTIONS always
+# can. A mutation can only be retried if the platform will recognise the second
+# attempt as the same one -- which is exactly Rule 4, so the presence of an
+# Idempotency-Key is the condition, the same rule the services enforce.
+_ALWAYS_SAFE = frozenset({"GET", "HEAD", "OPTIONS"})
+TRANSPORT_RETRIES = 3
+TRANSPORT_RETRY_BACKOFF = 0.5
+
+
+class RetryingTransport(_httpx.AsyncBaseTransport):
+    """Retries transport faults. Passes every HTTP response straight through."""
+
+    def __init__(self, inner=None, retries=TRANSPORT_RETRIES,
+                 backoff=TRANSPORT_RETRY_BACKOFF):
+        self._inner = inner or _httpx.AsyncHTTPTransport()
+        self._retries = retries
+        self._backoff = backoff
+
+    async def handle_async_request(self, request):
+        import asyncio
+
+        repeatable = (request.method in _ALWAYS_SAFE
+                      or "idempotency-key" in request.headers)
+
+        last = None
+        for attempt in range(self._retries + 1):
+            try:
+                return await self._inner.handle_async_request(request)
+            except _httpx.TransportError as exc:
+                last = exc
+                # A mutation with no idempotency key may already have taken
+                # effect -- the response was lost, not the request. Retrying it
+                # could place a second order, so it fails honestly instead.
+                if not repeatable or attempt == self._retries:
+                    raise
+                await asyncio.sleep(self._backoff * (2 ** attempt))
+        raise last  # unreachable; kept so the contract is explicit
+
+    async def aclose(self):
+        await self._inner.aclose()
+
+
+def new_client(**kwargs):
+    """An httpx.AsyncClient that rides out the host's connection drops.
+
+    Use this instead of httpx.AsyncClient() anywhere in the suite. A default
+    timeout is set because httpx's own default is None -- no timeout at all --
+    which turns a dropped connection into a test that hangs rather than one
+    that retries.
+    """
+    kwargs.setdefault("timeout", 30.0)
+    kwargs.setdefault("transport", RetryingTransport())
+    return _httpx.AsyncClient(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# the same problem, one layer down
+# ---------------------------------------------------------------------------
+#
+# Wrapping httpx was only half of it, and the half that missed the evidence.
+# Both [WinError 64] failures actually happened on raw Postgres connections --
+# test_01 opening asyncpg mid-poll, and test_04 in its database bootstrap --
+# where they surface as a bare ConnectionResetError out of the asyncio event
+# loop rather than as an httpx.TransportError. The HTTP retry never saw them.
+#
+# Connecting is always safe to repeat: it is establishing a socket, not running
+# a statement. So the retry wraps the *connect*, and nothing inside the
+# session. A query that fails mid-transaction still fails, which is what the
+# tests are there to notice.
+
+# asyncio.TimeoutError is TimeoutError on 3.11+, but named explicitly so
+# this keeps working if that ever stops being true.
+import asyncio as _asyncio
+_PG_CONNECT_ERRORS = (ConnectionResetError, ConnectionRefusedError,
+                      ConnectionAbortedError, BrokenPipeError, OSError,
+                      TimeoutError, _asyncio.TimeoutError)
+
+PG_CONNECT_RETRIES = 3
+PG_CONNECT_BACKOFF = 0.5
+
+# asyncpg's connect has no timeout by default, and a retry loop is useless
+# against a socket that never answers -- it blocks on the first attempt and
+# never reaches the second. Observed exactly that: Docker Desktop's
+# published-port forwarding hung while the container itself stayed healthy and
+# served 39 connections internally, and a host-side connect sat for 60s+
+# without raising. A bounded connect turns that hang into a retryable error,
+# which is the whole point.
+PG_CONNECT_TIMEOUT = 10.0
+
+
+async def connect_with_retry(dsn, retries=PG_CONNECT_RETRIES,
+                             backoff=PG_CONNECT_BACKOFF,
+                             timeout=PG_CONNECT_TIMEOUT, **kwargs):
+    """asyncpg.connect that rides out a dropped socket on the way up.
+
+    Use this instead of asyncpg.connect() anywhere in the suite.
+
+    Only the connection attempt is retried. Anything the caller then does with
+    the connection is its own business and is not repeated -- re-running a
+    statement after a mid-flight failure is how a test quietly does its work
+    twice.
+    """
+    import asyncio
+    import asyncpg
+
+    last = None
+    for attempt in range(retries + 1):
+        try:
+            return await asyncio.wait_for(
+                asyncpg.connect(dsn, **kwargs), timeout=timeout)
+        except _PG_CONNECT_ERRORS as exc:
+            last = exc
+            if attempt == retries:
+                raise
+            await asyncio.sleep(backoff * (2 ** attempt))
+    raise last  # unreachable; kept so the contract is explicit

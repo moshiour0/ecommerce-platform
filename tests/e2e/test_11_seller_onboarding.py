@@ -38,7 +38,7 @@ import uuid
 
 import asyncpg
 
-from config import db_url, describe, service_url
+from config import connect_with_retry, db_url, describe, service_url
 
 SELLER_URL = service_url("seller-service") + "/sellers"
 MEDIA_URL = service_url("media-service") + "/media"
@@ -85,7 +85,7 @@ async def first_category_id():
     owned catalog data. Reading an existing id keeps it a reader.
     """
     try:
-        conn = await asyncpg.connect(db_url("catalog_db"))
+        conn = await connect_with_retry(db_url("catalog_db"))
     except Exception:                            # noqa: BLE001 - optional dep
         return None
     try:
@@ -352,7 +352,7 @@ async def main():
     # Rule 3. catalog-service will learn who may sell from these; a transition
     # that emits nothing is a seller suspended here and still selling
     # everywhere else.
-    conn = await asyncpg.connect(db_url("seller_db"))
+    conn = await connect_with_retry(db_url("seller_db"))
     try:
         rows = await conn.fetch(
             "SELECT type, payload->>'status' AS status, "

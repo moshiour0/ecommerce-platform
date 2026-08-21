@@ -6,7 +6,7 @@ import os
 import sys
 import asyncpg
 
-from config import service_url, db_url, describe, ELASTICSEARCH_URL
+from config import ELASTICSEARCH_URL, connect_with_retry, db_url, describe, new_client, service_url
 
 ORDER_SAGA_URL = service_url("order-saga") + "/orders"
 STATE_FILE = ".e2e_state.json"
@@ -62,7 +62,7 @@ async def main():
         # inventory-service auto-creating 9999 units for any unknown product,
         # a backdoor removed by C-2. Without an explicit fixture the
         # reservation fails and the saga compensates instead of completing.
-        inv_conn = await asyncpg.connect(INVENTORY_DB_URL)
+        inv_conn = await connect_with_retry(INVENTORY_DB_URL)
         try:
             await inv_conn.execute(
                 """INSERT INTO inventory_items
@@ -77,7 +77,7 @@ async def main():
         print(f"0. Seeded inventory: 10 units for product {product_id[:8]}")
 
         print(f"1. Injecting Order into Saga Orchestrator (User: {user_id[:8]})...")
-        async with httpx.AsyncClient() as client:
+        async with new_client() as client:
             try:
                 res = await client.post(ORDER_SAGA_URL, json=saga_payload, headers=headers, timeout=10.0)
                 
@@ -99,7 +99,7 @@ async def main():
             print("   Polling Postgres database directly to verify completion...")
             
             # Poll DB for completion
-            conn = await asyncpg.connect(DB_URL)
+            conn = await connect_with_retry(DB_URL)
             try:
                 for attempt in range(1, 16):
                     await asyncio.sleep(2)

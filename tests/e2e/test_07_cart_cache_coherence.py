@@ -30,7 +30,7 @@ import uuid
 import asyncpg
 import httpx
 
-from config import db_url, describe, mesh_exec_prefix, redis_primary_service, service_url
+from config import connect_with_retry, db_url, describe, mesh_exec_prefix, new_client, redis_primary_service, service_url
 
 CART_URL = service_url("cart-service") + "/cart"
 CART_DB_URL = db_url("cart_db")
@@ -86,9 +86,9 @@ async def main():
     cart_key = f"cart:{user_id}"
     print(f"-> user {user_id[:8]}  A={product_a[:8]}  B={product_b[:8]}")
 
-    conn = await asyncpg.connect(CART_DB_URL)
+    conn = await connect_with_retry(CART_DB_URL)
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with new_client(timeout=15.0) as client:
 
             print("\n1. Seeding a cart with product A x2...")
             res = await client.post(
