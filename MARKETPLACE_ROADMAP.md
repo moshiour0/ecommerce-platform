@@ -580,12 +580,18 @@ The escrow ledger followed: double-entry, balanced on every write, booking what
 each seller is owed from the moment a courier collects rather than computing it
 at payout time (ARCHITECTURE_STATE_FINAL.md §3d).
 
+`bff-seller` followed, which closes the loop: a seller can now onboard, list,
+see their orders, dispatch them, and watch their balance, without ever touching
+an internal service. What they cannot do is mark their own parcel delivered —
+that consumes stock and books escrow, and a seller who could claim it could
+trigger their own payout (ARCHITECTURE_STATE_FINAL.md §3f).
+
 Still open, and named so they are not mistaken for done: nothing executes a
 payout — the ledger records one and clears the liability, but the rails and the
 bank details do not exist; no real courier is configured, so only the
 manual/spreadsheet provider ships; listing enforcement is on creation only;
-and refusal-risk scoring is not built. Next is `bff-seller`, so a seller can
-see any of this without reaching internal services — see §7 step 13.
+refusal-risk scoring is not built; and there are no seller performance metrics,
+which are exactly what ranking needs. Next is ranking — see §7 step 14.
 
 ---
 

@@ -7,6 +7,9 @@ module.exports = {
   // Where Redis is, decided from the environment. Pure -- no client library,
   // so requiring node-common never drags ioredis in.
   redisRules: require('./redis_rules'),
+  // Who a seller request is for, and what a seller may do. Pure, and
+  // shared so the answer cannot differ between two route handlers.
+  sellerScope: require('./seller_scope'),
   // The client itself is behind a getter on purpose. It requires ioredis, and
   // this index is loaded by tests and tools that have no Redis dependency at
   // all; an eager require would make node-common unloadable for them.

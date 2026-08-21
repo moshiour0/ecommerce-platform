@@ -6,7 +6,8 @@ from ..schemas import (
     SellerOrderActionRequest,
 )
 from ..services.saga_orchestrator import (
-    advance_saga, get_seller_orders, start_saga, transition_seller_order,
+    advance_saga, get_seller_order, get_seller_orders,
+    list_seller_orders, start_saga, transition_seller_order,
 )
 import uuid
 
@@ -41,6 +42,26 @@ async def process_saga_event_endpoint(
     import sys
     print(f"RECEIVED EVENT: {request.event_type} FOR {order_id}", file=sys.stderr, flush=True)
     return await advance_saga(db, order_id, request, idempotency_key)
+
+
+# A seller's own queue. Declared before /{order_id}/seller-orders so the
+# literal path wins over the parameterised one -- FastAPI matches in
+# declaration order, and "seller-orders" is a valid uuid-shaped path segment to
+# nobody, but the route would still shadow this one.
+@router.get("/seller-orders", status_code=200)
+async def list_seller_orders_endpoint(
+    seller_id: uuid.UUID,
+    status: str = None,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+):
+    return await list_seller_orders(db, seller_id, status, limit)
+
+
+@router.get("/seller-orders/{seller_order_id}", status_code=200)
+async def get_seller_order_endpoint(seller_order_id: uuid.UUID,
+                                    db: AsyncSession = Depends(get_db)):
+    return await get_seller_order(db, seller_order_id)
 
 
 # The per-seller breakdown, and the buyer-facing status derived from it.

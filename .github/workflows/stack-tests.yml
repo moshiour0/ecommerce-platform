@@ -11,7 +11,7 @@
 #
 # Why a slice rather than the whole platform
 # ------------------------------------------
-# The full stack is 42 containers, seven of which are JVMs (three Kafka
+# The full stack is 43 containers, seven of which are JVMs (three Kafka
 # brokers, Zookeeper, Schema Registry, Debezium, Elasticsearch). It needs
 # roughly 8 GB, which is why it cannot share a machine with the Kubernetes
 # cluster. A GitHub-hosted standard runner on a private repository is 2 cores

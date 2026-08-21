@@ -30,7 +30,7 @@ This repository documents what is built, not what is planned.
 
 | | Count | |
 |---|---|---|
-| Services | 21 | all carry substantive logic |
+| Services | 22 | all carry substantive logic |
 | Workers | 6 | `saga-dispatcher`, `stream-processor`, `notification-worker`, `reindex-worker`, `webhook-handler`, `dlq-reprocessor` — the six §3b names, all implemented |
 | Kubernetes manifests | 32 | generated from compose, never hand-edited |
 
@@ -56,7 +56,7 @@ is best read as working-but-unproven.
 
 ## Running it
 
-Requires Docker with about 8 GB available. The stack is 42 containers, seven of
+Requires Docker with about 8 GB available. The stack is 43 containers, seven of
 them JVMs (three Kafka brokers, ZooKeeper, Schema Registry, Debezium,
 Elasticsearch), so it does not comfortably share a machine with anything large.
 
@@ -129,9 +129,9 @@ Three tiers, deliberately separated by what they need to run.
 |---|---|---|---|
 | `tests/unit` | Decisions, against fake inputs and fake clocks | nothing | 578 |
 | `services/api-gateway/test` | Rate limit tiering and exemptions | nothing | 24 |
-| `shared/libs/node-common/test` | Read-model ownership and Redis topology | nothing | 28 |
+| `shared/libs/node-common/test` | Read-model ownership, Redis topology, seller scope | nothing | 42 |
 | `tests/integration` | Behaviour under real parallel load | running stack | 5 |
-| `tests/e2e` | The platform end to end | running stack | 15 |
+| `tests/e2e` | The platform end to end | running stack | 16 |
 
 ```bash
 python -m pytest tests/unit -q

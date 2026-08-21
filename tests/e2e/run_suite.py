@@ -46,6 +46,9 @@ TESTS = [
     # After test_14: it books the ledger from a delivery driven through
     # the API, and onboards its own sellers so it shares no fixtures.
     "test_15_escrow_ledger",
+    # Needs JWT_SECRET in the environment for the gateway checks; it
+    # skips those and still asserts the rest without one.
+    "test_16_seller_dashboard",
     # Last on purpose: these two stop infrastructure. Both put it back and
     # wait for recovery before finishing, but running either earlier would
     # have every test after it sharing a cluster mid-repair.

@@ -12,6 +12,7 @@ const PORT = process.env.PORT || 8000;
 
 const BFF_SHOP_URL = process.env.BFF_SHOP_URL || 'http://bff-shop:8001';
 const BFF_CHECKOUT_URL = process.env.BFF_CHECKOUT_URL || 'http://bff-checkout:8002';
+const BFF_SELLER_URL = process.env.BFF_SELLER_URL || 'http://bff-seller:8021';
 
 // 0. Proxy trust — decides what req.ip is, and therefore what the rate limiter
 // counts. Defaults to false, which is correct while the gateway is reached
@@ -80,6 +81,40 @@ app.use('/api/shop', createProxyMiddleware({
   },
   onError: (err, req, res) => {
     logger.error(`Proxy error to bff-shop: ${err.message}`);
+    res.status(502).json({ detail: 'Bad Gateway' });
+  }
+}));
+
+// Proxy /api/seller to bff-seller
+//
+// The seller's identity is set HERE, from the verified token, and is the only
+// way bff-seller learns who is calling. A caller cannot supply it: any
+// x-seller-id on the inbound request is overwritten, and bff-seller refuses a
+// request that names a seller in the query or body.
+//
+// Without the claim there is no header, and bff-seller answers 401. A buyer's
+// token is not a seller's token, and treating one as the other would give
+// every logged-in customer a seller dashboard.
+app.use('/api/seller', createProxyMiddleware({
+  target: BFF_SELLER_URL,
+  changeOrigin: true,
+  pathRewrite: {
+    '^/api/seller': '/api/seller'
+  },
+  onProxyReq: (proxyReq, req, res) => {
+    // Strip anything the caller sent, unconditionally, before deciding what
+    // to set. Overwriting only when a claim exists would let a forged header
+    // survive on a token that has none.
+    proxyReq.removeHeader('x-seller-id');
+    if (req.user && req.user.seller_id) {
+      proxyReq.setHeader('x-seller-id', String(req.user.seller_id));
+    }
+    if (req.user) {
+      proxyReq.setHeader('x-user-id', req.user.sub || req.user.user_id || 'unknown');
+    }
+  },
+  onError: (err, req, res) => {
+    logger.error(`Proxy error to bff-seller: ${err.message}`);
     res.status(502).json({ detail: 'Bad Gateway' });
   }
 }));

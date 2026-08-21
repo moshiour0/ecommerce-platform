@@ -469,3 +469,88 @@ async def transition_seller_order(db: AsyncSession, order_id, seller_order_id,
         "courier_name": seller_order.courier_name,
         "tracking_code": seller_order.tracking_code,
     }
+
+
+def _seller_order_view(seller_order, lines):
+    return {
+        "id": str(seller_order.id),
+        "order_id": str(seller_order.order_id),
+        "seller_id": str(seller_order.seller_id),
+        "status": seller_order.status,
+        "status_reason": seller_order.status_reason,
+        "subtotal_cents": seller_order.subtotal_cents,
+        "currency": seller_order.currency,
+        "item_count": seller_order.item_count,
+        "courier_name": seller_order.courier_name,
+        "tracking_code": seller_order.tracking_code,
+        "confirmed_at": seller_order.confirmed_at,
+        "dispatched_at": seller_order.dispatched_at,
+        "delivered_at": seller_order.delivered_at,
+        "settled_at": seller_order.settled_at,
+        "created_at": seller_order.created_at,
+        "lines": lines,
+    }
+
+
+async def _lines_for(db: AsyncSession, seller_order_ids):
+    """One query for many seller orders' lines, not one per order.
+
+    The seller queue is the hottest caller and an N+1 here reads fine at ten
+    orders and behaves like ten round trips.
+    """
+    if not seller_order_ids:
+        return {}
+    result = await db.execute(
+        select(OrderLine).where(OrderLine.seller_order_id.in_(seller_order_ids))
+        .order_by(OrderLine.product_id))
+    grouped = {}
+    for line in result.scalars().all():
+        grouped.setdefault(line.seller_order_id, []).append({
+            "product_id": str(line.product_id),
+            "quantity": line.quantity,
+            "price_cents": line.price_cents,
+            "line_total_cents": line.line_total_cents,
+        })
+    return grouped
+
+
+async def list_seller_orders(db: AsyncSession, seller_id, status: str = None,
+                             limit: int = 50):
+    """One seller's orders, newest first.
+
+    Filtered by seller in the query rather than in the caller: a seller queue
+    that fetches everything and filters afterwards is one refactor away from
+    forgetting to filter.
+    """
+    query = (select(SellerOrder)
+             .where(SellerOrder.seller_id == seller_id)
+             .order_by(SellerOrder.created_at.desc())
+             .limit(min(limit, 200)))
+    if status:
+        query = query.where(SellerOrder.status == status)
+
+    seller_orders = (await db.execute(query)).scalars().all()
+    lines = await _lines_for(db, [so.id for so in seller_orders])
+    return {
+        "seller_id": str(seller_id),
+        "count": len(seller_orders),
+        "seller_orders": [_seller_order_view(so, lines.get(so.id, []))
+                          for so in seller_orders],
+    }
+
+
+async def get_seller_order(db: AsyncSession, seller_order_id):
+    """One seller order, by its own id.
+
+    Deliberately does not take a seller: this is the read a caller uses to
+    *establish* who owns it, and requiring the answer as an argument would
+    make the check circular.
+    """
+    result = await db.execute(
+        select(SellerOrder).where(SellerOrder.id == seller_order_id))
+    seller_order = result.scalar_one_or_none()
+    if seller_order is None:
+        raise HTTPException(status_code=404, detail="Seller order not found")
+
+    lines = await _lines_for(db, [seller_order.id])
+    return _seller_order_view(seller_order, lines.get(seller_order.id, []))

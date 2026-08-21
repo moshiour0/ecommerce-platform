@@ -44,6 +44,7 @@ services:
       - PORT=8000
       - BFF_SHOP_URL=http://bff-shop:8001
       - BFF_CHECKOUT_URL=http://bff-checkout:8002
+      - BFF_SELLER_URL=http://bff-seller:8021
       # Rule 6.3: the trace must start at the edge, not at order-saga.
       # NODE_OPTIONS loads OpenTelemetry before express/axios are
       # required -- instrumentation patches `require`, so importing it
@@ -83,6 +84,33 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
       - OTEL_SERVICE_NAME=bff-shop
       - NODE_OPTIONS=--require node-common/tracing
+
+  # The seller dashboard's only entry point. Rule 7: sellers must never reach
+  # internal services directly -- order-saga has an endpoint that marks a
+  # seller order delivered, which is correct for the courier integration and
+  # catastrophic for a seller.
+  #
+  # 8021 opens Rule 2's extension range. 8001-8020 filled up when
+  # seller-service took the last slot.
+  bff-seller:
+    <<: *node-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+      args:
+        SERVICE_PATH: services/bff-seller
+    ports:
+      - "8021:8021"
+    environment:
+      - PORT=8021
+      - SELLER_SERVICE_URL=http://seller-service:8020
+      - ORDER_SAGA_URL=http://order-saga:8012
+      - CATALOG_SERVICE_URL=http://catalog-service:8005
+      - PAYMENT_SERVICE_URL=http://payment-service:8015
+      - FULFILLMENT_SERVICE_URL=http://fulfillment-service:8016
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_SERVICE_NAME=bff-seller
+    command: [ "node", "src/index.js" ]
 
   bff-checkout:
     <<: *node-service

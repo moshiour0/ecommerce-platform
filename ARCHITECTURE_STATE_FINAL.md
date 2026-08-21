@@ -25,18 +25,17 @@ Role Directive: You are "Anti-Gravity", a Principal Distributed Systems Architec
 *   Status: 21 services and 6 workers are scaffolded; roughly half the service
     directories contain substantive logic. Every Kubernetes manifest under
     `infrastructure/k8s/services` is currently empty. Verify before assuming.
-*   Current Priority: the marketplace path. Seller permission is enforced on
-    listing, orders split per seller, the COD lifecycle runs from confirmation
-    to settlement, couriers sit behind one contract with their remittances
-    reconciled, and the escrow ledger records what each seller is owed from
-    the moment a courier collects (§3d, §3e). Next is `bff-seller`, so sellers
-    can see any of it without reaching internal services. The single-tenant
-    order loop (saga, compensation, consumer idempotency) is closed and proven
-    by `tests/e2e`.
+*   Current Priority: the marketplace path is walkable end to end — a seller
+    onboards, lists, receives a split order, dispatches it, a courier delivers
+    it, the cash reconciles and the ledger records what they are owed, and
+    they can see all of it through `bff-seller` (§3d–§3f). Next is ranking
+    (§7 step 14), whose inputs are the seller performance metrics nothing yet
+    computes. The single-tenant order loop (saga, compensation, consumer
+    idempotency) is closed and proven by `tests/e2e`.
 
 ## 2. Authoritative Architectural Rules
 1.  Strict Data Isolation: No microservice may share a database. Services default to PostgreSQL, but may use specialized datastores where semantically appropriate (e.g., Redis exclusively for Cart, Elasticsearch for Search). No cross-database queries are permitted.
-2.  Strict Network Isolation: Every backend service must have a strictly unique local port mapping to prevent collisions. **Allocated ranges:** `8000` ingress gateway; `8001-8020` the twenty core services; `8030-8039` workers **`8001-8020` is now full** — seller-service took `8020` on 2026-08-21. The next core service needs this rule amended, and the free extension is `8021-8029`, since `8030-8039` is workers and `8040-8049` is reserved for Media Center. (health and metrics endpoints only — workers expose no business API). The previous single range of `8001-8020` was exactly twenty slots for twenty services with the gateway already occupying `8000`, leaving no allocation for any worker. Workers are first-class deployable units and must be addressable for liveness probes.
+2.  Strict Network Isolation: Every backend service must have a strictly unique local port mapping to prevent collisions. **Allocated ranges:** `8000` ingress gateway; `8001-8020` the twenty core services; `8030-8039` workers **`8001-8020` filled up** when seller-service took `8020` on 2026-08-21, so the range is extended: **`8021-8029` is now allocated to core services**, and `bff-seller` opened it at `8021`. That leaves seven slots before the next amendment, and it is the last extension available below `8030-8039` (workers) and `8040-8049` (reserved for Media Center) — a service beyond `8029` needs a new range rather than a nudge. (health and metrics endpoints only — workers expose no business API). The previous single range of `8001-8020` was exactly twenty slots for twenty services with the gateway already occupying `8000`, leaving no allocation for any worker. Workers are first-class deployable units and must be addressable for liveness probes.
 3.  Outbox Before Kafka: Application code must never publish business events directly to Kafka. Business state and OutboxMessage records are written in the same atomic PostgreSQL transaction. CDC (Debezium) publishes those events to Kafka.
 4.  Idempotency is Mandatory: All state-mutating APIs require a UUIDv4 Idempotency-Key. Consumers must execute INSERT INTO processed_events ... ON CONFLICT DO NOTHING in the exact same transaction as their business logic. **Idempotency Response Contract:** On idempotency conflict (i.e., the key has been seen before), the service MUST return the previously committed result with its original HTTP status code — never an error. The idempotency guard is a cache, not a gate. Returning HTTP 409 on a legitimate retry is a protocol violation.
 
@@ -83,6 +82,7 @@ Role Directive: You are "Anti-Gravity", a Principal Distributed Systems Architec
 *   api-gateway: Ingress, auth forwarding, rate limiting (Node.js). Must validate request body schemas against OpenAPI specs before forwarding payloads, rejecting malformed requests at the network edge. **Tiered Rate Limiting:** Read endpoints (search, catalog browse) allow 200 req/min/IP; write endpoints (checkout, cart mutation) allow 20 req/min/IP; authenticated admin endpoints allow 50 req/min/user. The rate limiter backend must use a shared store (Redis) to enforce limits consistently across all gateway replicas.
 *   bff-shop: Read-heavy storefront orchestration (Node.js).
 *   bff-checkout: Write-heavy checkout orchestration (Node.js).
+*   bff-seller: The seller dashboard's only entry point (Node.js). Scopes every read and write to the seller in the verified token, and refuses the lifecycle actions only a courier or the platform may attest to — see §3f.
 *   websocket-gateway: Real-time push delivery and reconnect logic (Node.js).
 *   user-service: Owns profile, identity data, and address books.
 *   catalog-service: Source of truth for product variants and base metadata.
@@ -577,8 +577,47 @@ on *creation* only. A seller suspended after listing keeps their existing
 products live — taking them down is a separate decision (§7 step 9 onward),
 because it is a bulk state change with its own reversal, not a check.
 
-`bff-seller` — the seller dashboard of orders, inventory, payouts and metrics
-— is not built. Sellers must not reach internal services directly.
+### 3f. The seller dashboard (implemented)
+
+`bff-seller` on port 8021, and the reason it exists is narrow: sellers must
+never reach internal services directly (Rule 7). `order-saga` has an endpoint
+that marks a seller order delivered — correct for the courier integration to
+call and catastrophic for a seller. This service is where that line is drawn.
+
+**Identity comes from the verified token and nowhere else.** The gateway strips
+any inbound `x-seller-id` unconditionally and sets it only from the token's
+`seller_id` claim, so a forged header cannot survive on a token that has none.
+`bff-seller` refuses a request that names a seller in the query or body at all,
+rather than ignoring it — a caller who believes they scoped a request and
+receives an unscoped answer has been misled by the API. A BFF that accepted
+`?seller_id=` would let every seller read every other seller's orders, balance
+and customer addresses by changing one number, and it would look entirely
+normal in a log.
+
+Another seller's order answers **404, not 403**: a 403 confirms the id exists
+and turns the endpoint into an enumerator.
+
+**A seller may not attest to what only somebody else witnessed.**
+
+| Allowed | Refused | Why |
+|---|---|---|
+| `confirm` | `deliver` | consumes stock and books escrow — a seller claiming it triggers their own payout for goods still on their shelf |
+| `dispatch` | `settle` | the platform reconciling cash a courier remitted |
+| `cancel` | `mark_rto` | a refusal at the door is something the courier witnessed |
+| | `complete_return` | confirmed when the goods are physically back |
+
+The allowlist and the reasons live in `node-common/seller_scope.js` as frozen
+data, shared so the answer cannot differ between two route handlers, and each
+refusal returns its reason — "forbidden" alone is a support ticket.
+
+Ownership is checked **before** the action, not after: acting first would let
+one seller confirm another's order and only then be told they were not allowed
+to.
+
+**Not built:** performance metrics (on-time dispatch, cancellation rate, return
+rate, rating), which the roadmap names as the inputs to ranking (§3.1) and
+which nothing yet computes. There is no seller-facing product editor either —
+`GET /products` lists a seller's catalogue and nothing writes it back.
 
 ## 4. Webhook Deduplication Strategy (4-Layers)
 External PSP webhooks must pass this exact sequence:
@@ -734,8 +773,9 @@ list:**
     2026-08-21. Double entry, balanced on every write, booked at delivery.
     Executing a payout is not built — the ledger records one, the rails do
     not exist.
-13. **`bff-seller`**, the seller dashboard. Sellers must never reach internal
-    services directly (Rule 7).
+13. ~~**`bff-seller`**, the seller dashboard. Sellers must never reach
+    internal services directly (Rule 7).~~ ✅ done 2026-08-21 (§3f). Seller
+    performance metrics are not built, and they are step 14's input.
 14. **Ranking**: products and reviews first, then proximity — one pipeline,
     not per-surface sort orders.
 15. **Media Center**, once the marketplace has sellers and orders (§3c).
