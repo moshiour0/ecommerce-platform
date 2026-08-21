@@ -25,10 +25,10 @@ Role Directive: You are "Anti-Gravity", a Principal Distributed Systems Architec
 *   Status: 21 services and 6 workers are scaffolded; roughly half the service
     directories contain substantive logic. Every Kubernetes manifest under
     `infrastructure/k8s/services` is currently empty. Verify before assuming.
-*   Current Priority: the marketplace path — enforce seller permission on
-    listing, split orders per seller, then the COD order lifecycle and courier
-    settlement. The single-tenant order loop (saga, compensation, consumer
-    idempotency) is closed and proven by `tests/e2e`.
+*   Current Priority: the marketplace path. Seller permission is enforced on
+    listing and orders split per seller (§3d, §3e); next is the COD order
+    lifecycle, then courier settlement. The single-tenant order loop (saga,
+    compensation, consumer idempotency) is closed and proven by `tests/e2e`.
 
 ## 2. Authoritative Architectural Rules
 1.  Strict Data Isolation: No microservice may share a database. Services default to PostgreSQL, but may use specialized datastores where semantically appropriate (e.g., Redis exclusively for Cart, Elasticsearch for Search). No cross-database queries are permitted.
@@ -307,8 +307,38 @@ status vocabulary and their own settlement format. They belong behind one
 internal contract in `fulfillment-service`, exactly as the PSP does behind
 `payment-service` — never with per-provider logic leaking into the saga.
 
-**Not built.** No `SellerOrder` table, no COD saga path, no courier adapter, no
-escrow ledger. `order-saga` today implements the card vocabulary in §3 only.
+**The split is implemented.** Checkout writes one `Order`, one `SellerOrder`
+per seller and one `order_line` per line (migration 016), and emits one
+`SellerOrderCreated` per seller order. `GET /orders/{id}/seller-orders` returns
+the breakdown together with the derived parent status.
+
+`seller_id` reaches order-saga because bff-checkout puts it there: it already
+fetches every product from catalog to validate the cart (Rule 7), so the
+seller is one field on a response it was reading anyway. A line that arrives
+without one **refuses the whole checkout** rather than splitting the part that
+parses — a line nobody can be paid for is a line nobody can be asked to ship,
+and creating the other seller orders would leave it in an order that can never
+complete, with stock reserved against it.
+
+Order lines had no home before this. They existed only inside the outbox
+payload on the way to the inventory reservation, so `order_db` knew a total
+and not what it was a total of. That was survivable for one tenant and is not
+survivable for a marketplace, where courier collection, payout, commission,
+returns and seller metrics are all per seller and none of them can be answered
+from a total.
+
+**Still not built:** nothing advances a `SellerOrder` past `PENDING`. The COD
+transitions, the courier adapter and the escrow ledger are §7 steps 10–12. The
+saga continues to drive the parent through the card vocabulary in §3
+meanwhile, so the stored parent status and the derived one legitimately differ
+today; `GET /orders/{id}/seller-orders` reports both, labelled, rather than
+reconciling them silently.
+
+Tax, shipping and promotions are **not** allocated across sellers. That
+allocation decides what each seller is paid and what commission is charged on,
+so it is a finance decision rather than an arithmetic one. What is guaranteed
+is conservation: the seller subtotals sum to the order's goods subtotal
+exactly, asserted in both the unit tests and `tests/e2e/test_12`.
 
 ### 3e. Seller onboarding (implemented)
 
@@ -532,9 +562,9 @@ list:**
    synchronously and failing closed (§3e). Enforcement is on creation only;
    taking an existing catalogue down when a seller is suspended is part of
    step 9's per-seller work.
-9. **Split orders per seller.** The `SellerOrder` aggregate in §3d. Every
-   later step — courier assignment, payout, RTO, seller metrics — is per
-   seller and cannot be expressed against a single flat order.
+9. ~~**Split orders per seller.**~~ ✅ done 2026-08-21. The `SellerOrder`
+   aggregate in §3d, plus the order lines that had nowhere to live before it.
+   Nothing advances a seller order past `PENDING` yet — that is step 10.
 10. **The COD order path.** The state vocabulary in §3d, the reservation TTL
     that survives days rather than minutes, and refusal risk in
     `fraud-service` before dispatch.

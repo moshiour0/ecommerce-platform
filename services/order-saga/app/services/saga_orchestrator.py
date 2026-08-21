@@ -4,9 +4,14 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from fastapi import HTTPException
-from ..models import OrderSagaState, OutboxMessage, IdempotencyKey
+from ..models import OrderLine, SellerOrder, OrderSagaState, OutboxMessage, IdempotencyKey
 from ..schemas import CreateOrderRequest, SagaEventRequest
 from .transitions import Outcome, resolve
+from .split_rules import (
+    EVENT_SELLER_ORDER_CREATED, SplitError, build_seller_order_event,
+    derive_order_status, goods_subtotal_cents, is_order_complete,
+    split_by_seller,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +83,53 @@ async def start_saga(db: AsyncSession, request: CreateOrderRequest, idempotency_
         updated_at=datetime.now(timezone.utc)
     )
     db.add(saga_state)
+
+    # Split into one order per seller, before anything else is written.
+    #
+    # Refused as a whole if any line cannot be attributed to a seller: a line
+    # nobody can be paid for is a line nobody can be asked to ship, and
+    # creating the seller orders that *do* parse would leave that line in an
+    # order that can never complete -- with stock reserved against it, because
+    # the reservation command below covers every line regardless.
+    try:
+        plans = split_by_seller(request.items_payload)
+    except SplitError as e:
+        await db.rollback()
+        raise HTTPException(status_code=422, detail=str(e))
+
+    for plan in plans:
+        seller_order_id = uuid.uuid4()
+        db.add(SellerOrder(
+            id=seller_order_id,
+            order_id=saga_id,
+            seller_id=uuid.UUID(plan.seller_id),
+            status="PENDING",
+            subtotal_cents=plan.subtotal_cents,
+            item_count=plan.item_count,
+        ))
+        for line in plan.lines:
+            db.add(OrderLine(
+                order_id=saga_id,
+                seller_order_id=seller_order_id,
+                product_id=uuid.UUID(line["product_id"]),
+                seller_id=uuid.UUID(plan.seller_id),
+                quantity=line["quantity"],
+                price_cents=line["price_cents"],
+                line_total_cents=line["line_total_cents"],
+            ))
+
+        # One event per seller order. The seller has to hear about their own
+        # order, and a consumer acting on it -- a notification, a courier
+        # assignment, the seller dashboard -- should not have to ask order-saga
+        # what is in it.
+        db.add(OutboxMessage(
+            aggregate_type="SellerOrder",
+            aggregate_id=str(seller_order_id),
+            type=EVENT_SELLER_ORDER_CREATED,
+            payload=build_seller_order_event(
+                str(saga_id), str(seller_order_id), str(saga_state.user_id),
+                plan, "PENDING"),
+        ))
 
     # Emit ReserveInventoryCommand via Outbox
     outbox_message = OutboxMessage(
@@ -214,3 +266,57 @@ async def advance_saga(db: AsyncSession, order_id: str, request: SagaEventReques
         raise HTTPException(status_code=500, detail=str(e))
 
     return saga_state
+
+
+async def get_seller_orders(db: AsyncSession, order_id):
+    """This order, broken down by who has to ship it.
+
+    The buyer-facing status here is *derived* from the children rather than
+    read from order_saga_states.status, and the two can legitimately differ
+    while the COD lifecycle is unimplemented: the saga still drives the parent
+    through its own vocabulary (PENDING -> INVENTORY_RESERVED -> PAID -> ...)
+    while every seller order sits at PENDING. Both are reported, labelled, so
+    the difference is visible rather than reconciled by whichever one a caller
+    happens to read.
+    """
+    result = await db.execute(
+        select(SellerOrder).where(SellerOrder.order_id == order_id)
+        .order_by(SellerOrder.seller_id))
+    seller_orders = result.scalars().all()
+
+    lines_result = await db.execute(
+        select(OrderLine).where(OrderLine.order_id == order_id)
+        .order_by(OrderLine.product_id))
+    lines = lines_result.scalars().all()
+
+    by_seller_order = {}
+    for line in lines:
+        by_seller_order.setdefault(line.seller_order_id, []).append({
+            "product_id": str(line.product_id),
+            "quantity": line.quantity,
+            "price_cents": line.price_cents,
+            "line_total_cents": line.line_total_cents,
+        })
+
+    statuses = [so.status for so in seller_orders]
+    return {
+        "order_id": str(order_id),
+        "seller_order_count": len(seller_orders),
+        "derived_status": derive_order_status(statuses),
+        "complete": is_order_complete(statuses),
+        # Goods across every seller order. Deliberately not the order total,
+        # which also carries tax, shipping and promotions.
+        "goods_subtotal_cents": sum(so.subtotal_cents for so in seller_orders),
+        "seller_orders": [
+            {
+                "id": str(so.id),
+                "seller_id": str(so.seller_id),
+                "status": so.status,
+                "subtotal_cents": so.subtotal_cents,
+                "currency": so.currency,
+                "item_count": so.item_count,
+                "lines": by_seller_order.get(so.id, []),
+            }
+            for so in seller_orders
+        ],
+    }

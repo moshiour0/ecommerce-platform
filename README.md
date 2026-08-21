@@ -131,7 +131,7 @@ Three tiers, deliberately separated by what they need to run.
 | `services/api-gateway/test` | Rate limit tiering and exemptions | nothing | 24 |
 | `shared/libs/node-common/test` | Read-model ownership and Redis topology | nothing | 28 |
 | `tests/integration` | Behaviour under real parallel load | running stack | 5 |
-| `tests/e2e` | The platform end to end | running stack | 11 |
+| `tests/e2e` | The platform end to end | running stack | 12 |
 
 ```bash
 python -m pytest tests/unit -q

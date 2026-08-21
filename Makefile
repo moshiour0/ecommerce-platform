@@ -74,7 +74,7 @@ verify:
 		         test_03_saga_orchestrator test_04_full_checkout_flow \
 		         test_05_auxiliary_services test_06_intra_mesh_connectivity \
 		         test_07_cart_cache_coherence test_08_rate_limit_state_loss \
-		         test_11_seller_onboarding \
+		         test_11_seller_onboarding test_12_order_splitting \
 		         test_09_broker_loss test_10_redis_failover; do \
 			if python $$t.py >/dev/null 2>&1; then \
 				echo "  PASS  $$t"; pass=$$((pass+1)); \

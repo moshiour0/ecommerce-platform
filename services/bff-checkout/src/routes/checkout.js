@@ -63,8 +63,21 @@ router.post('/:user_id', async (req, res, next) => {
       const pricingRes = await pricingClient.get(`/prices/${item.product_id}`);
       const livePrice = pricingRes.data.base_price_cents;
 
+      // seller_id comes from catalog, which is already being asked about this
+      // product for validation. order-saga splits the order by it, and refuses
+      // the whole checkout if any line arrives without one -- a line nobody
+      // can be paid for is a line nobody can be asked to ship.
+      const sellerId = catalogRes.data.seller_id;
+      if (!sellerId) {
+        throw {
+          status: 400,
+          detail: `Product ${item.product_id} has no seller and cannot be ordered`
+        };
+      }
+
       return {
         product_id: item.product_id,
+        seller_id: sellerId,
         quantity: item.quantity,
         price_cents: livePrice,
         line_total_cents: livePrice * item.quantity

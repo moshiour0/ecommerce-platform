@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..schemas import CreateOrderRequest, SagaEventRequest, SagaResponse
-from ..services.saga_orchestrator import start_saga, advance_saga
+from ..services.saga_orchestrator import (
+    advance_saga, get_seller_orders, start_saga,
+)
 import uuid
 
 router = APIRouter(prefix="/orders", tags=["orders"])
@@ -36,3 +38,10 @@ async def process_saga_event_endpoint(
     import sys
     print(f"RECEIVED EVENT: {request.event_type} FOR {order_id}", file=sys.stderr, flush=True)
     return await advance_saga(db, order_id, request, idempotency_key)
+
+
+# The per-seller breakdown, and the buyer-facing status derived from it.
+@router.get("/{order_id}/seller-orders", status_code=200)
+async def seller_orders_endpoint(order_id: uuid.UUID,
+                                 db: AsyncSession = Depends(get_db)):
+    return await get_seller_orders(db, order_id)

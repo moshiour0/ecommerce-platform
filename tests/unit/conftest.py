@@ -139,3 +139,8 @@ seller_rules = load_module(
     "seller_rules_under_test",
     "services/seller-service/app/services/seller_rules.py",
 )
+
+split_rules = load_module(
+    "split_rules_under_test",
+    "services/order-saga/app/services/split_rules.py",
+)

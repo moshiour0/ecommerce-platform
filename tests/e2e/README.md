@@ -56,13 +56,18 @@ postgres, the Redis primary/replica/sentinel set, minio, cart-service,
 inventory-service, api-gateway, audit-service, seller-service, media-service —
 which is everything those tests touch.
 
-`test_01` through `test_06` and `test_09` are **manual**. The first six drive
+`test_01` through `test_06`, `test_09` and `test_12` are **manual**. The first six drive
 the CQRS pipeline (Debezium → Kafka → Elasticsearch) and the saga, so trimming
 them is not possible: they need most of the platform or they are testing
 nothing. `test_09_broker_loss` needs the Kafka layer specifically — three
 brokers plus ZooKeeper — and stops one of them mid-run. The full stack is 36
 containers including seven JVMs and wants roughly 8 GB, while a GitHub-hosted
 standard runner on a private repository is 2 cores and 8 GB.
+
+`test_12_order_splitting` needs seller-service, catalog-service,
+pricing-service, cart-service, inventory-service, bff-checkout and order-saga
+— most of the platform — so it stays out of CI for the same reason the first
+six do.
 
 `test_09` and `test_10` are the two that are deliberately **not** portable:
 they stop and start infrastructure by container name, so they only run against

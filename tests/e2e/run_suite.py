@@ -34,6 +34,9 @@ TESTS = [
     # Before the two that stop infrastructure: it needs seller-service and
     # media-service answering, and nothing it does disturbs either.
     "test_11_seller_onboarding",
+    # After test_11: it onboards its own sellers, but it needs the same
+    # services answering and there is no reason to interleave them.
+    "test_12_order_splitting",
     # Last on purpose: these two stop infrastructure. Both put it back and
     # wait for recovery before finishing, but running either earlier would
     # have every test after it sharing a cluster mid-repair.

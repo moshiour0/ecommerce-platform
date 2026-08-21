@@ -561,10 +561,15 @@ Enforcement followed the same day: `catalog-service` refuses a listing from a
 seller who may not sell, synchronously and failing closed
 (ARCHITECTURE_STATE_FINAL.md §3e). Onboarding now decides something.
 
-Still open, and named so they are not mistaken for done: enforcement is on
-creation only, so a seller suspended after listing keeps their existing
-products live; and there is no `bff-seller`. Next is splitting orders per
-seller, then the COD order path — see ARCHITECTURE_STATE_FINAL.md §3d and §7.
+Order splitting followed: one cart across two sellers becomes one `Order` and
+two `SellerOrder`s, with the money conserved and each announced on the outbox
+(ARCHITECTURE_STATE_FINAL.md §3d). Order lines are stored for the first time —
+before this, `order_db` knew a total and not what it was a total of.
+
+Still open, and named so they are not mistaken for done: listing enforcement is
+on creation only, so a seller suspended afterwards keeps their existing
+products live; nothing advances a seller order past `PENDING`; and there is no
+`bff-seller`. Next is the COD order lifecycle — see §7 steps 10–12.
 
 ---
 

@@ -31,6 +31,7 @@ This script exits non-zero the moment anything fails.
 Usage:  python scripts/bootstrap_schema.py
 """
 
+import os
 import subprocess
 import sys
 import time
@@ -82,6 +83,7 @@ MIGRATIONS = [
     ("013_media_db_asset_purpose.sql", ["media_meta_db"]),
     ("014_seller_db_onboarding.sql", ["seller_db"]),
     ("015_seller_db_platform_seller.sql", ["seller_db"]),
+    ("016_order_db_seller_orders.sql", ["order_db"]),
 ]
 
 LEDGER_DDL = """
@@ -95,7 +97,17 @@ failures = []
 
 
 def run(cmd, **kw):
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+    # UTF-8 explicitly, in both directions.
+    #
+    # `text=True` alone encodes stdin with the *locale* encoding, which is
+    # cp1252 on a Windows host. A migration containing any character outside
+    # ASCII then reaches psql as cp1252 bytes while psql is decoding UTF-8, and
+    # it fails with `invalid byte sequence for encoding "UTF8"` pointing at a
+    # line that looks perfectly ordinary. Migration 016 hit exactly that on a
+    # section-sign in a comment.
+    kw.setdefault("env", {**os.environ, "PGCLIENTENCODING": "UTF8"})
+    return subprocess.run(cmd, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", **kw)
 
 
 def wait_for_postgres(timeout=90):

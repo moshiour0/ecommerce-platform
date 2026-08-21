@@ -15,9 +15,14 @@ class CategoryResponse(CategoryBase):
     model_config = ConfigDict(from_attributes=True)
 
 class ProductBase(BaseModel):
-    # Optional at the edge and defaulted to the platform seller, because there
-    # is no seller-service to issue real ids yet. Stored NOT NULL, so a product
-    # always has an owner even while that owner is a placeholder.
+    # Optional at the edge and defaulted to the platform seller, which is a
+    # real active seller in seller_db rather than an exemption (migration 015).
+    # Stored NOT NULL, and checked against seller-service before the product is
+    # created -- a seller who may not sell cannot list, whichever id is used.
+    #
+    # Returned on reads as well as accepted on writes: bff-checkout reads it to
+    # attribute every order line to a seller, and order-saga refuses a checkout
+    # with a line that has none.
     seller_id: Optional[UUID] = None
     category_id: UUID
     # Required. It was silently dropped before -- pydantic discards unknown
