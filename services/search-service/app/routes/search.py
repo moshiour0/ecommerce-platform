@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, Query
 from elasticsearch import AsyncElasticsearch
 from ..es_client import get_es_client
 from ..schemas import SearchResponse
@@ -25,6 +25,10 @@ async def perform_search(
                        description="Buyer latitude, for nearest-shop scoring"),
     lon: float = Query(None, ge=-180, le=180,
                        description="Buyer longitude, for nearest-shop scoring"),
+    # The buyer, from the gateway's verified token. Absent for an anonymous
+    # search, which is then not personalised at all -- there is no device or
+    # session profile to fall back on, by construction.
+    x_user_id: str = Header(None),
     es: AsyncElasticsearch = Depends(get_es_client)
 ):
     # Half a coordinate is not a location. Taking one and defaulting the other
@@ -36,4 +40,5 @@ async def perform_search(
             detail="lat and lon must be given together; one without the other "
                    "is not a location")
 
-    return await search_products(es, q, page, size, seller_id, lat, lon)
+    return await search_products(es, q, page, size, seller_id, lat, lon,
+                                 x_user_id)

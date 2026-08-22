@@ -62,6 +62,14 @@ REFRESH_TRIGGERS = frozenset({
     "SellerApproved",
     "SellerReinstated",
     "SellerLocationUpdated",
+
+    # And the events that take a seller *out* of good standing. Without these
+    # the projection only ever learned good news: a suspension left every one
+    # of that seller's product documents saying they could still sell, and
+    # search went on showing them.
+    "SellerSuspended",
+    "SellerBanned",
+    "SellerRejected",
 })
 
 
@@ -88,6 +96,10 @@ def seller_id_from(event_type: str, payload: Dict[str, Any]) -> Optional[str]:
 class SellerSignals:
     """Everything ranking reads about a seller, ready to be indexed."""
 
+    # Whether this seller may still receive orders. Distinct from every other
+    # field here: the rest tune a score, this one decides whether the product
+    # should be findable at all.
+    may_sell: Optional[bool]
     rating: Optional[float]
     review_count: Optional[int]
     on_time_dispatch_rate: Optional[float]
@@ -138,6 +150,12 @@ def build_signal_fields(signals: SellerSignals) -> Dict[str, Any]:
         location = {"lat": latitude, "lon": longitude}
 
     return {
+        # None means unknown, and search treats unknown as *visible*. That is
+        # the deliberate direction: a projection that has not run yet, or a
+        # seller-service that could not be reached during a refresh, must not
+        # silently empty the catalogue. Suspension hides a seller only once the
+        # platform positively knows they are suspended.
+        "seller_may_sell": signals.may_sell,
         "seller_rating": signals.rating,
         "seller_review_count": signals.review_count,
         "seller_on_time_dispatch_rate": signals.on_time_dispatch_rate,
@@ -166,7 +184,15 @@ def signals_from_responses(metrics: Optional[Dict[str, Any]],
     latitude, longitude = parse_coordinates(profile.get("latitude"),
                                             profile.get("longitude"))
 
+    # `may_list_products` is what seller-service reports on the profile; the
+    # checkout path asks `may_receive_orders`. They agree today and are
+    # separate on purpose, so this reads the one that governs visibility.
+    may_sell = profile.get("may_list_products")
+    if may_sell is not None:
+        may_sell = bool(may_sell)
+
     return SellerSignals(
+        may_sell=may_sell,
         rating=reviews.get("rating"),
         review_count=reviews.get("review_count"),
         on_time_dispatch_rate=metrics.get("on_time_dispatch_rate"),

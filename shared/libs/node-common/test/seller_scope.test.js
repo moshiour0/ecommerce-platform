@@ -18,7 +18,9 @@ const {
   callerSuppliedSeller,
   isSellerAction,
   refusalReason,
-  ownsSellerOrder
+  ownsSellerOrder,
+  maySellTo,
+  sellerRefusalDetail
 } = require('../seller_scope');
 
 // ---------------------------------------------------------------------------
@@ -123,4 +125,50 @@ test('the allowlist is frozen', () => {
   // A route handler pushing onto it at runtime would widen a payout control
   // for the life of the process.
   assert.throws(() => SELLER_ACTIONS.push('deliver'));
+});
+
+// ---------------------------------------------------------------------------
+// may this seller still be sold from?
+// ---------------------------------------------------------------------------
+//
+// Listing enforcement was creation-only: catalog-service asked whether a
+// seller could list at the moment a product was created and nothing ever asked
+// again, so suspending a seller left their whole catalogue live and buyable.
+// A suspension that does not stop orders is not a suspension.
+
+test('an active seller may be sold from', () => {
+  assert.equal(maySellTo({ may_receive_orders: true }), true);
+});
+
+test('a suspended seller may not', () => {
+  assert.equal(maySellTo({ may_receive_orders: false }), false);
+});
+
+test('permission must be exactly true, not merely truthy', () => {
+  // A payload that changed shape and now returns a string would otherwise
+  // read as consent.
+  for (const value of ['yes', 'true', 1, {}, [], 'false']) {
+    assert.equal(maySellTo({ may_receive_orders: value }), false,
+      `${JSON.stringify(value)} was treated as permission`);
+  }
+});
+
+test('it fails closed on anything unusable', () => {
+  // An outage must not become the way to buy from a banned seller.
+  for (const value of [null, undefined, {}, 'ok', 42, []]) {
+    assert.equal(maySellTo(value), false);
+  }
+});
+
+test('the refusal does not leak which seller is suspended', () => {
+  // A buyer cannot fix a seller's suspension, and naming the status would
+  // leak one merchant's standing to anyone willing to add their product to a
+  // cart.
+  const detail = sellerRefusalDetail(['p-1']);
+  assert.ok(!/suspend|ban|status/i.test(detail), detail);
+});
+
+test('the refusal reads correctly for one item and for several', () => {
+  assert.match(sellerRefusalDetail(['p-1']), /An item is/);
+  assert.match(sellerRefusalDetail(['p-1', 'p-2']), /Some items are/);
 });

@@ -125,6 +125,10 @@ services:
       - PORT=8002
       - CART_SERVICE_URL=http://cart-service:8007
       - CATALOG_SERVICE_URL=http://catalog-service:8005
+      # Whether each seller in a cart may still receive orders. Listing
+      # enforcement is creation-only, so without this a suspended seller's
+      # whole catalogue stays buyable.
+      - SELLER_SERVICE_URL=http://seller-service:8020
       - PRICING_SERVICE_URL=http://pricing-service:8008
       - FRAUD_SERVICE_URL=http://fraud-service:8014
       - DELIVERY_QUOTE_SERVICE_URL=http://delivery-quote-service:8011
@@ -209,6 +213,10 @@ services:
       # Seller quality signals for the ranking pipeline. Best effort and
       # behind a breaker: a search must not fail because metrics are slow.
       - ORDER_SAGA_URL=http://order-saga:8012
+      # Buyer affinity for the personalisation term. One fetch per search, not
+      # per result, and it fails soft: no profile means no opinion, which
+      # scores exactly as it did before this service existed.
+      - PERSONALISATION_SERVICE_URL=http://personalisation-service:8023
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8006" ]
 
@@ -452,6 +460,27 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
       - OTEL_SERVICE_NAME=reviews-service
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8022" ]
+
+  # Personalisation. Port 8023 in the 8021-8029 extension (Rule 2).
+  #
+  # Owns behaviour_db, which holds the most personal data on the platform --
+  # what individual people looked at. It publishes nothing: affinity is read
+  # directly by search-service, and putting a stream of "this person viewed
+  # that product" on Kafka would copy it into every consumer's storage.
+  personalisation-service:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+      args:
+        SERVICE_PATH: services/personalisation-service
+    ports:
+      - "8023:8023"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/behaviour_db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_SERVICE_NAME=personalisation-service
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8023" ]
 
   audit-service:
     <<: *python-service

@@ -127,11 +127,11 @@ Three tiers, deliberately separated by what they need to run.
 
 | Tier | What it proves | Needs | Count |
 |---|---|---|---|
-| `tests/unit` | Decisions, against fake inputs and fake clocks | nothing | 990 |
+| `tests/unit` | Decisions, against fake inputs and fake clocks | nothing | 1025 |
 | `services/api-gateway/test` | Rate limit tiering and exemptions | nothing | 24 |
 | `shared/libs/node-common/test` | Read-model ownership, Redis topology, seller scope | nothing | 42 |
 | `tests/integration` | Behaviour under real parallel load | running stack | 5 |
-| `tests/e2e` | The platform end to end | running stack | 19 |
+| `tests/e2e` | The platform end to end | running stack | 21 |
 
 ```bash
 python -m pytest tests/unit -q

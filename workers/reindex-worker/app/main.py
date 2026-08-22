@@ -87,6 +87,13 @@ SELECT id::text AS product_id,
        name,
        description,
        is_active,
+       -- What kind of thing this is. Indexed so the personalisation term can
+       -- ask whether a buyer leans towards this category without a lookup per
+       -- result. Listing it in CATALOG_FIELDS was not enough on its own:
+       -- build_document only emits fields present on the row, so a field the
+       -- scan does not select is silently absent from every backfilled
+       -- document and nothing reports it.
+       category_id::text AS category_id,
        -- catalog's list price, indexed under its own name so it cannot
        -- collide with the effective price pricing-service publishes.
        price_cents AS base_price_cents,

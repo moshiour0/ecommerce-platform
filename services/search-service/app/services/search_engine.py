@@ -1,5 +1,8 @@
 from elasticsearch import AsyncElasticsearch
 from ..schemas import SearchResponse, SearchResultItem
+from .affinity_lookup import affinity_profile
+from python_common.affinity_rules import (affinity_for,
+                                          profile_from_dict)
 from .quality_lookup import quality_for
 from .ranking_rules import haversine_km
 from python_common.read_model import (has_seller_signals,
@@ -12,7 +15,8 @@ INDEX_NAME = "products"
 async def search_products(es: AsyncElasticsearch, query: str, page: int,
                           size: int, seller_id: str = None,
                           buyer_lat: float = None,
-                          buyer_lon: float = None) -> SearchResponse:
+                          buyer_lon: float = None,
+                          buyer_id: str = None) -> SearchResponse:
     """Search, scored by ARCHITECTURE 3g's one pipeline.
 
     `buyer_lat`/`buyer_lon` are optional and default to unknown. A buyer who
@@ -49,7 +53,24 @@ async def search_products(es: AsyncElasticsearch, query: str, page: int,
                     # become visible as nameless, priceless results.
                     #
                     # sku is the catalog marker: nothing else writes it.
-                    {"exists": {"field": "sku"}}
+                    {"exists": {"field": "sku"}},
+                    # A suspended seller's catalogue disappears from search.
+                    #
+                    # Listing enforcement was creation-only: catalog-service
+                    # asked whether a seller could list at the moment a product
+                    # was created, and nothing ever asked again. Suspending a
+                    # seller left every product they had ever listed both
+                    # visible and buyable.
+                    #
+                    # Written as "not explicitly false" rather than "is true",
+                    # and the difference is the whole safety of it. A document
+                    # the projection has not reached yet has no
+                    # `seller_may_sell` at all, and requiring true would empty
+                    # the catalogue the moment this deployed. Suspension hides
+                    # a seller only once the platform positively knows they are
+                    # suspended; unknown stays visible.
+                    {"bool": {"must_not": [
+                        {"term": {"seller_may_sell": False}}]}}
                     # Inventory is deliberately not filtered here. Showing an
                     # out-of-stock product is a product decision, not a
                     # correctness one, and hiding them made freshly seeded
@@ -85,6 +106,11 @@ async def search_products(es: AsyncElasticsearch, query: str, page: int,
     # projection existed, and only those: a hit that already carries signals
     # costs nothing, and one that does not is resolved the old way rather than
     # ranking as average forever.
+    # One fetch for the whole page, because a profile is a fact about the buyer
+    # rather than about any result. None for an anonymous search, which scores
+    # exactly as it did before personalisation existed.
+    profile = profile_from_dict(await affinity_profile(buyer_id))
+
     unprojected = [h["_source"].get("seller_id") for h in hits
                    if not has_seller_signals(h["_source"])
                    and h["_source"].get("seller_id")]
@@ -122,7 +148,13 @@ async def search_products(es: AsyncElasticsearch, query: str, page: int,
             "relevance": hit.get("_score") or 0.0,
             "quality": quality,
             "distance_km": distance_km,
-            "affinity": None,
+            # The last term of the formula, finally carrying something.
+            # None whenever there is no opinion -- anonymous buyer, too little
+            # history, or a product whose category and seller are both unknown
+            # -- and None is exactly a 1.0 multiplier.
+            "affinity": affinity_for(profile,
+                                     source.get("category_id"),
+                                     seller_id),
             "source": source,
             "price": price,
             "price_source": price_source,

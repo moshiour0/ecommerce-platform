@@ -29,6 +29,7 @@ def process_event(event_type: str, payload: Dict[str, Any]):
             write_product(es, doc_id, CATALOG, {
                 "seller_id": payload.get("seller_id"),
                 "sku": payload.get("sku"),
+                "category_id": payload.get("category_id"),
                 "name": payload.get("name"),
                 "description": payload.get("description"),
                 "is_active": payload.get("is_active", True),

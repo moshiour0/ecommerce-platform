@@ -57,6 +57,10 @@ const PRODUCT_FIELD_OWNERS = {
   // a price change or a stock movement.
   seller_id: 'catalog-service',
   sku: 'catalog-service',
+  // What kind of thing this is. Catalog-owned, and indexed so personalisation
+  // can ask whether a buyer leans towards this category without a lookup per
+  // result (ARCHITECTURE 3j).
+  category_id: 'catalog-service',
   name: 'catalog-service',
   description: 'catalog-service',
   is_active: 'catalog-service',
@@ -78,6 +82,10 @@ const PRODUCT_FIELD_OWNERS = {
   // instead of N HTTP lookups. Refreshed as a set: a partial write would
   // leave today's rating beside last week's return rate and nothing would
   // look wrong.
+  // Whether the seller may still be sold from. Unlike the rest of this
+  // block it does not tune a score -- it decides whether the product is
+  // findable at all.
+  seller_may_sell: 'seller-projection',
   seller_rating: 'seller-projection',
   seller_review_count: 'seller-projection',
   seller_on_time_dispatch_rate: 'seller-projection',

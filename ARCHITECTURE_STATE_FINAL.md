@@ -836,6 +836,69 @@ is passed as `None` everywhere, because nothing records what a buyer has looked
 at. And the buyer's location has to be supplied by the caller — there is no
 saved delivery address feeding it.
 
+### 3j. Personalisation, and what a suspension stops (implemented)
+
+**Personalisation** completes §3g's formula. `affinity` had been passed as
+`None` since the day that formula was written, because nothing recorded what a
+buyer had looked at. `personalisation-service` on port 8023 owns `behaviour_db`
+and records views, cart adds and purchases with the category and seller that
+were on screen at the time — captured then rather than joined later, because a
+product can be recategorised or change hands and what matters is what the buyer
+was interested in *then*.
+
+Interests decay with a 30-day half-life, are normalised so the strongest is
+1.0, and are exposed as weights only. Verified live: a matching product scores
+**1.1050**, a non-matching one **1.0000**, an anonymous buyer **1.0000**.
+
+**The trap worth recording**: `personalisation_boost(0)` is **0.9 — a
+penalty** — and only `None` is 1.0. So an unknown dimension can never
+contribute 0, or an unfamiliar seller would demote a product. The neutral
+affinity is derived from ranking's own constants, `(1.0 − 0.9) / 0.25 = 0.4`,
+with a test pinning the arithmetic. A first version rescaled instead, which
+silently made `CATEGORY_WEIGHT` and `SELLER_WEIGHT` have no effect whenever one
+dimension was missing — which is most of the time.
+
+Three brakes: the multiplier range (0.9–1.15) is narrower than quality's, a
+single dominant interest caps at 0.85 so a marketplace cannot collapse to one
+category, and below five weighted events there is no opinion at all.
+
+Privacy is structural. Identified buyers only — there is no device or session
+profile, so an anonymous search is not personalised by construction rather than
+by omission. A buyer can read and delete their own history. A daily sweep drops
+behaviour past four half-lives. `behaviour_db` publishes nothing to Kafka, and
+the connector coverage test carries an explicit exemption saying why: a stream
+of "this person viewed that product" would land in every consumer's storage.
+
+**What a suspension stops.** Listing enforcement was creation-only —
+catalog-service asked whether a seller could list at the moment a product was
+created and nothing ever asked again. Suspending a seller left their entire
+catalogue visible *and buyable*. A suspension that does not stop orders is not
+a suspension.
+
+Two halves, both verified live:
+
+* `bff-checkout` asks `may_receive_orders` once per distinct seller in a cart
+  and refuses with 409. Verified: **201 while active → 409 while suspended**,
+  with a message that does not name the seller's standing — a buyer cannot fix
+  a suspension, and naming it would leak one merchant's status to anyone
+  willing to add their product to a cart. Fails closed, the same direction as
+  the listing check.
+* The seller-signal projection carries `seller_may_sell` onto every product,
+  and search filters on it. Verified: **3 visible → 0 suspended → 3
+  reinstated**, with all documents still indexed.
+
+The search filter is written as "not explicitly false" rather than "is true",
+and that is the deploy-safety property: a document the projection has not
+reached yet has no flag at all, and requiring `true` would have emptied the
+catalogue the moment this shipped. Suspension hides a seller only once the
+platform positively knows they are suspended.
+
+**Still open**: personalisation records behaviour by HTTP at the point of the
+interaction, so a lost call costs a little ranking signal — acceptable, and
+deliberately not given outbox machinery, which would be pricing a page view
+like money. Nothing yet records views from the storefront itself; the endpoint
+exists and the caller does not.
+
 ## 4. Webhook Deduplication Strategy (4-Layers)
 External PSP webhooks must pass this exact sequence:
 1. HMAC-SHA256 Signature Verification.

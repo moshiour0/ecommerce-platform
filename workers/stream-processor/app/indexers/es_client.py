@@ -32,6 +32,9 @@ INDEX_MAPPING = {
             # never full-text searched.
             "seller_id": {"type": "keyword"},
             "sku": {"type": "keyword"},
+            # keyword: categories are matched and aggregated on, never
+            # full-text searched.
+            "category_id": {"type": "keyword"},
             "name": {"type": "text"},
             "description": {"type": "text"},
             # Written only by pricing-service: the effective price.
@@ -49,6 +52,7 @@ INDEX_MAPPING = {
             # capped at 25, cached for a minute and behind a breaker -- correct,
             # and a round trip per search. Indexed, Elasticsearch scores on
             # them in the same query that matched the text.
+            "seller_may_sell": {"type": "boolean"},
             "seller_rating": {"type": "float"},
             "seller_review_count": {"type": "integer"},
             "seller_on_time_dispatch_rate": {"type": "float"},

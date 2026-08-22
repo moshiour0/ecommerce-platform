@@ -67,7 +67,8 @@ from typing import Any, Dict, List, Optional, Tuple
 # Under its own name it has a single writer and search falls back to it only
 # when pricing has published nothing.
 CATALOG_FIELDS = ("product_id", "seller_id", "sku", "name", "description",
-                  "is_active", "base_price_cents", "updated_at")
+                  "is_active", "base_price_cents", "category_id",
+                  "updated_at")
 
 # Written only by this worker, and the only thing the freshness guard reads.
 # Sharing `updated_at` with pricing and inventory made the guard compare a
@@ -85,6 +86,7 @@ CATALOG_TIMESTAMP_FIELD = "catalog_updated_at"
 # ranking would silently flatten to neutral until the next review landed.
 # The parity test against read_model is what caught this.
 FOREIGN_FIELDS = ("price_cents", "quantity_available",
+                  "seller_may_sell",
                   "seller_rating", "seller_review_count",
                   "seller_on_time_dispatch_rate", "seller_cancellation_rate",
                   "seller_return_rate", "seller_confidence",

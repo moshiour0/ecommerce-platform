@@ -67,6 +67,10 @@ PRODUCT_FIELD_OWNERS: Mapping[str, str] = {
     # by a price change or a stock movement.
     "seller_id": CATALOG,
     "sku": CATALOG,
+    # What kind of thing this is. Catalog-owned, and indexed so personalisation
+    # can ask whether a buyer leans towards this category without a lookup per
+    # result (ARCHITECTURE 3j).
+    "category_id": CATALOG,
     "name": CATALOG,
     "description": CATALOG,
     "is_active": CATALOG,
@@ -88,6 +92,10 @@ PRODUCT_FIELD_OWNERS: Mapping[str, str] = {
     # scores in one query instead of N HTTP lookups. They are refreshed as a
     # set: a partial write would leave a rating from today beside a return rate
     # from last week, and nothing would look wrong.
+    # Whether the seller may still be sold from. Unlike the rest of this
+    # block it does not tune a score -- it decides whether the product is
+    # findable, which is why search filters on it rather than weighting it.
+    "seller_may_sell": SELLER_SIGNALS,
     "seller_rating": SELLER_SIGNALS,
     "seller_review_count": SELLER_SIGNALS,
     "seller_on_time_dispatch_rate": SELLER_SIGNALS,

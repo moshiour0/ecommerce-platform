@@ -144,10 +144,64 @@ def test_every_database_that_exists_gets_a_connector():
 
     assert created, "no CREATE DATABASE statements found in init-dbs.sh"
 
-    missing = created - set(DATABASES)
+    missing = created - set(DATABASES) - DATABASES_WITHOUT_AN_OUTBOX
     assert not missing, (
         f"database(s) with no Debezium connector: {sorted(missing)}. Their "
         f"outbox rows will never reach Kafka, and nothing will report it.")
+
+
+# Databases that deliberately publish nothing, and why.
+#
+# An exemption list is a place bugs hide, so it is short and each entry has to
+# justify itself. The test above is about a database whose outbox nothing
+# watches; a database with no outbox at all is a different thing, and giving it
+# a connector would provision a replication slot for a table that does not
+# exist.
+DATABASES_WITHOUT_AN_OUTBOX = frozenset({
+    # behaviour_db records what buyers looked at. Nothing downstream consumes
+    # it: affinity is read directly by search-service, and publishing a stream
+    # of "this person viewed that product" into Kafka -- where it is retained
+    # and read by consumers this service does not know about -- would copy the
+    # most personal data on the platform into every one of their stores.
+    "behaviour_db",
+})
+
+
+def test_every_exempt_database_really_has_no_outbox():
+    """The exemption is checkable rather than trusted.
+
+    A database that grows an outbox later and stays on this list would publish
+    nothing and report nothing, which is exactly the failure the test above
+    exists to catch.
+    """
+    import re
+    from pathlib import Path
+
+    migrations = Path(__file__).resolve().parents[2] / "migrations"
+    for database in DATABASES_WITHOUT_AN_OUTBOX:
+        for path in migrations.glob(f"*{database.replace('_db', '_db')}*.sql"):
+            sql = path.read_text(encoding="utf-8")
+            statements = re.findall(
+                r"CREATE TABLE IF NOT EXISTS (\w+)", sql)
+            assert "outbox_messages" not in statements, (
+                f"{path.name} creates an outbox in {database}, which is on "
+                f"the no-connector exemption list. Either remove the "
+                f"exemption or remove the outbox.")
+
+
+def test_no_connector_points_at_a_database_that_does_not_exist():
+    """The other direction: a slot provisioned for nothing.
+
+    Split back out of the coverage test above, where it had been sharing that
+    test's local `created` -- an edit inserted the exemption list between the
+    two halves and orphaned this one.
+    """
+    import re
+    from pathlib import Path
+
+    init_sh = (Path(__file__).resolve().parents[2]
+               / "init-dbs.sh").read_text(encoding="utf-8")
+    created = set(re.findall(r"CREATE DATABASE (\w+);", init_sh))
 
     unknown = set(DATABASES) - created
     assert not unknown, (

@@ -56,6 +56,9 @@ SELLER_SIGNAL_EVENTS = frozenset({
     "ReviewPublished", "ReviewUpdated",
     "SellerOrderDelivered", "SellerOrderReturned", "SellerOrderCancelled",
     "SellerApproved", "SellerReinstated", "SellerLocationUpdated",
+    # And the events that take a seller out of good standing. Missing these
+    # would mean the projection only ever learned good news.
+    "SellerSuspended", "SellerBanned", "SellerRejected",
 })
 
 INDEXED_EVENTS = frozenset({PRODUCT_CREATED, PRICE_UPDATED,

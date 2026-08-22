@@ -134,3 +134,51 @@ module.exports = {
   refusalReason,
   ownsSellerOrder
 };
+
+// ---------------------------------------------------------------------------
+// may this seller still be sold from?
+// ---------------------------------------------------------------------------
+//
+// Listing enforcement was creation-only. catalog-service asks seller-service
+// whether a seller may list at the moment a product is created, and nothing
+// ever asks again -- so suspending a seller left their entire existing
+// catalogue live and, more to the point, buyable. A suspension that does not
+// stop orders is not a suspension.
+//
+// The question at checkout is `may_receive_orders`, not `may_list_products`.
+// They return the same answer today and are separate on purpose: a seller
+// winding down stops taking new orders well before their listings come down,
+// and asking the listing question here would silently adopt the wrong one the
+// day that policy exists.
+
+/**
+ * Whether an order may be placed with this seller.
+ *
+ * Fails closed. An unreachable seller-service, a malformed answer or a missing
+ * field all mean "no" -- because the alternative is that an outage becomes the
+ * way to buy from a banned seller, and outages are cheap to cause.
+ *
+ * `true` must be exactly true rather than merely truthy: a permission payload
+ * that changed shape and now returns a string would otherwise read as consent.
+ */
+function maySellTo(permission) {
+  if (!permission || typeof permission !== 'object') return false;
+  return permission.may_receive_orders === true;
+}
+
+/**
+ * Why a seller was refused, in words a buyer can act on.
+ *
+ * Deliberately vague about *which* seller failed and why. A buyer cannot fix a
+ * seller's suspension, and naming the status would leak one merchant's
+ * standing to anyone willing to add their product to a cart.
+ */
+function sellerRefusalDetail(productIds) {
+  const many = productIds.length > 1;
+  return `${many ? 'Some items are' : 'An item is'} no longer available from `
+       + `${many ? 'their sellers' : 'its seller'}. `
+       + `Remove ${many ? 'them' : 'it'} from your cart to continue.`;
+}
+
+module.exports.maySellTo = maySellTo;
+module.exports.sellerRefusalDetail = sellerRefusalDetail;

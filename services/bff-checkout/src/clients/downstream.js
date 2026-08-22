@@ -28,6 +28,12 @@ const fraudClient = client(
 const deliveryQuoteClient = client(
   'delivery-quote-service', process.env.DELIVERY_QUOTE_SERVICE_URL || 'http://delivery-quote-service:8011', 20);
 
+// Asked once per distinct seller in a cart, not once per line: whether a
+// seller may still be sold from is a fact about the seller, and a cart of ten
+// items from one shop is one question.
+const sellerClient = client(
+  'seller-service', process.env.SELLER_SERVICE_URL || 'http://seller-service:8020', 20);
+
 // The saga is the write path. A smaller bulkhead here means a stalled saga
 // cannot consume the whole pool and take the read-only quote paths with it.
 const orderSagaClient = client(
@@ -35,7 +41,7 @@ const orderSagaClient = client(
 
 const allClients = [
   cartClient, catalogClient, pricingClient,
-  fraudClient, deliveryQuoteClient, orderSagaClient
+  fraudClient, deliveryQuoteClient, orderSagaClient, sellerClient
 ];
 
 module.exports = {
@@ -45,6 +51,7 @@ module.exports = {
   fraudClient,
   deliveryQuoteClient,
   orderSagaClient,
+  sellerClient,
   // Surfaced on /health so operators can see which dependencies are tripped.
   breakerStates: () => allClients.map(c => c.stats())
 };

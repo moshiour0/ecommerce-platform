@@ -5,8 +5,10 @@ const {
   pricingClient,
   fraudClient,
   deliveryQuoteClient,
-  orderSagaClient
+  orderSagaClient,
+  sellerClient
 } = require('../clients/downstream');
+const { sellerScope } = require('node-common');
 const logger = require('../utils/logger');
 const { v4: uuidv4 } = require('uuid');
 
@@ -93,6 +95,49 @@ router.post('/:user_id', async (req, res, next) => {
       }
       logger.error(`Catalog/Pricing validation failed: ${err.message}`);
       return res.status(400).json({ detail: `Validation failed: ${err.message}` });
+    }
+
+    // Every seller in this cart must still be allowed to receive orders.
+    //
+    // Listing enforcement was creation-only: catalog-service asks whether a
+    // seller may list at the moment a product is created, and nothing ever
+    // asked again. So suspending a seller left their entire existing
+    // catalogue live *and buyable*, which is the half that matters -- a
+    // suspension that does not stop orders is not a suspension.
+    //
+    // Asked once per distinct seller rather than once per line: it is a fact
+    // about the seller, and a cart of ten items from one shop is one question.
+    //
+    // Fails closed. An unreachable seller-service refuses the checkout rather
+    // than letting it through, because otherwise an outage becomes the way to
+    // buy from a banned seller, and outages are cheap to cause. That is the
+    // same direction catalog-service fails on the listing check.
+    const distinctSellers = [...new Set(validatedItems.map(i => i.seller_id))];
+    const blocked = [];
+    await Promise.all(distinctSellers.map(async (sid) => {
+      let permission = null;
+      try {
+        const res = await sellerClient.get(`/sellers/${sid}/permission`);
+        permission = res.data;
+      } catch (err) {
+        logger.warn(`Seller ${sid} permission unavailable: ${err.message}; `
+                  + `refusing rather than selling unchecked`);
+      }
+      if (!sellerScope.maySellTo(permission)) {
+        blocked.push(sid);
+      }
+    }));
+
+    if (blocked.length > 0) {
+      const productIds = validatedItems
+        .filter(i => blocked.includes(i.seller_id))
+        .map(i => i.product_id);
+      logger.warn(`Checkout refused: ${blocked.length} seller(s) may not `
+                + `receive orders`);
+      return res.status(409).json({
+        detail: sellerScope.sellerRefusalDetail(productIds),
+        unavailable_product_ids: productIds
+      });
     }
 
     const cartSumCents = validatedItems.reduce((sum, item) => sum + item.line_total_cents, 0);

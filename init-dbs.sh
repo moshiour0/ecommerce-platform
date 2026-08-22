@@ -18,6 +18,7 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     CREATE DATABASE media_meta_db;
     CREATE DATABASE seller_db;
     CREATE DATABASE review_db;
+    CREATE DATABASE behaviour_db;
     CREATE DATABASE audit_db;
 EOSQL
 echo "Isolated databases created successfully."

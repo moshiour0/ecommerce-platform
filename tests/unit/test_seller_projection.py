@@ -41,7 +41,8 @@ signals_from_responses = projection.signals_from_responses
 
 
 def signals(**overrides):
-    base = dict(rating=4.5, review_count=12, on_time_dispatch_rate=0.9,
+    base = dict(may_sell=True, rating=4.5, review_count=12,
+                on_time_dispatch_rate=0.9,
                 cancellation_rate=0.02, return_rate=0.1, confidence=0.6,
                 latitude=23.8103, longitude=90.4125)
     base.update(overrides)
