@@ -13,11 +13,12 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import IdempotencyKey, OutboxMessage, Review
+from ..models import IdempotencyKey, OutboxMessage, Review, ReviewReport
 from .order_client import fetch_purchase
-from .review_rules import (Aggregate, aggregate_ratings, distribution,
-                           may_edit, may_review, quality_signal,
-                           validate_rating)
+from .review_rules import (Aggregate, ModerationState, PUBLIC_STATES,
+                           ReportReason, aggregate_ratings, distribution,
+                           may_edit, may_report, may_review, quality_signal,
+                           state_after_report, validate_rating, visible_to)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ def _view(review: Review) -> dict:
         "body": review.body,
         "created_at": review.created_at,
         "updated_at": review.updated_at,
+        "moderation_state": review.moderation_state,
     }
 
 
@@ -191,9 +193,13 @@ async def edit_review(db: AsyncSession, review_id, *, buyer_id,
 
 async def product_summary(db: AsyncSession, product_id) -> dict:
     """What buyers see on a product page."""
+    # Non-public reviews are excluded from the aggregate as well as from the
+    # list. A review hidden from the page but still counted in the average is
+    # worse than either -- the rating moves for a reason nobody can see.
     result = await db.execute(
         select(Review.product_rating)
-        .where(Review.product_id == uuid.UUID(str(product_id))))
+        .where(Review.product_id == uuid.UUID(str(product_id)))
+        .where(Review.moderation_state.in_([s.value for s in PUBLIC_STATES])))
     ratings = [row[0] for row in result.all()]
     summary = aggregate_ratings(ratings)
     return {
@@ -213,7 +219,8 @@ async def seller_summary(db: AsyncSession, seller_id) -> dict:
     """
     result = await db.execute(
         select(Review.seller_rating)
-        .where(Review.seller_id == uuid.UUID(str(seller_id))))
+        .where(Review.seller_id == uuid.UUID(str(seller_id)))
+        .where(Review.moderation_state.in_([s.value for s in PUBLIC_STATES])))
     ratings = [row[0] for row in result.all()]
     summary = aggregate_ratings(ratings)
     return {"seller_id": str(seller_id), **quality_signal(summary),
@@ -224,6 +231,7 @@ async def list_for_product(db: AsyncSession, product_id, limit: int = 20):
     result = await db.execute(
         select(Review)
         .where(Review.product_id == uuid.UUID(str(product_id)))
+        .where(Review.moderation_state.in_([s.value for s in PUBLIC_STATES]))
         .order_by(Review.created_at.desc())
         .limit(min(limit, 100)))
     return [_view(r) for r in result.scalars().all()]
@@ -241,3 +249,144 @@ def _parse(value):
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+EVENT_REVIEW_HIDDEN = "ReviewHidden"
+EVENT_REVIEW_MODERATED = "ReviewModerated"
+
+
+async def report_review(db: AsyncSession, review_id, *, reporter_id, reason,
+                        note=None) -> dict:
+    """Record that someone thinks this review should not be there.
+
+    A report is evidence, not a decision. Three *distinct* people hide a review
+    pending a human; one does nothing, because the person most motivated to
+    report a one-star review is the seller it is about.
+    """
+    try:
+        reason = ReportReason(reason)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown reason {reason!r}; expected one of "
+                   f"{sorted(r.value for r in ReportReason)}") from None
+
+    review = await db.get(Review, uuid.UUID(str(review_id)))
+    if review is None:
+        raise HTTPException(status_code=404, detail="no such review")
+
+    is_author = str(review.buyer_id) == str(reporter_id)
+    decision = may_report(review.moderation_state, reporter_is_author=is_author)
+    if not decision.allowed:
+        raise HTTPException(status_code=decision.http_status,
+                            detail=decision.detail)
+
+    db.add(ReviewReport(id=uuid.uuid4(), review_id=review.id,
+                        reporter_id=uuid.UUID(str(reporter_id)),
+                        reason=reason.value, note=note))
+    try:
+        await db.commit()
+    except IntegrityError:
+        # One report per person per review. The threshold counts distinct
+        # reporters, so without this one determined person could hide any
+        # review by filing three times -- exactly the abuse it exists to stop.
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="you have already reported this review") from None
+
+    count = await db.execute(
+        select(func.count(func.distinct(ReviewReport.reporter_id)))
+        .where(ReviewReport.review_id == review.id))
+    reporters = count.scalar() or 0
+
+    new_state = state_after_report(review.moderation_state, reporters)
+    if new_state.value != review.moderation_state:
+        review.moderation_state = new_state.value
+        db.add(OutboxMessage(
+            aggregate_type="Review", aggregate_id=str(review.id),
+            type=EVENT_REVIEW_HIDDEN,
+            payload=dict(_event_payload(review), reporters=reporters)))
+        await db.commit()
+        logger.warning(f"Review {review.id} hidden after {reporters} distinct "
+                       f"report(s); awaiting a moderator")
+
+    return {"reported": True, "distinct_reporters": reporters,
+            "moderation_state": review.moderation_state}
+
+
+async def moderate_review(db: AsyncSession, review_id, *, decision,
+                          note=None) -> dict:
+    """A human's ruling, which no volume of further reports can overturn.
+
+    Only two outcomes: the review stays or it goes. There is deliberately no
+    "hide indefinitely without deciding" -- that is what the pending state is
+    for, and giving it a permanent form would let a queue become a graveyard.
+    """
+    if decision not in ("remove", "clear"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"decision must be 'remove' or 'clear', got {decision!r}")
+
+    review = await db.get(Review, uuid.UUID(str(review_id)))
+    if review is None:
+        raise HTTPException(status_code=404, detail="no such review")
+
+    review.moderation_state = (ModerationState.REMOVED.value
+                               if decision == "remove"
+                               else ModerationState.CLEARED.value)
+    review.moderated_at = _now()
+    review.moderation_note = note
+
+    db.add(OutboxMessage(
+        aggregate_type="Review", aggregate_id=str(review.id),
+        type=EVENT_REVIEW_MODERATED,
+        payload=dict(_event_payload(review),
+                     moderation_state=review.moderation_state)))
+    await db.commit()
+    await db.refresh(review)
+    logger.info(f"Review {review.id} {decision}d by a moderator")
+    return _view(review)
+
+
+async def moderation_queue(db: AsyncSession, limit: int = 50):
+    """Reviews hidden by reports and waiting on a person.
+
+    Oldest first: a queue served newest-first leaves its worst cases at the
+    bottom forever.
+    """
+    result = await db.execute(
+        select(Review)
+        .where(Review.moderation_state
+               == ModerationState.HIDDEN_PENDING_REVIEW.value)
+        .order_by(Review.created_at)
+        .limit(min(limit, 200)))
+    reviews = list(result.scalars().all())
+
+    out = []
+    for review in reviews:
+        reports = await db.execute(
+            select(ReviewReport.reason, ReviewReport.note)
+            .where(ReviewReport.review_id == review.id))
+        rows = reports.all()
+        out.append(dict(_view(review),
+                        report_count=len(rows),
+                        reasons=sorted({r[0] for r in rows}),
+                        notes=[r[1] for r in rows if r[1]]))
+    return out
+
+
+async def my_reviews(db: AsyncSession, buyer_id, limit: int = 50):
+    """A buyer's own reviews, including any that have been hidden.
+
+    An author always sees their own. A review that vanishes with no trace
+    teaches its writer only that the platform cannot be trusted, and the ones
+    most likely to be reported are the ones most worth being able to appeal.
+    """
+    result = await db.execute(
+        select(Review)
+        .where(Review.buyer_id == uuid.UUID(str(buyer_id)))
+        .order_by(Review.created_at.desc())
+        .limit(min(limit, 200)))
+    return [_view(r) for r in result.scalars().all()
+            if visible_to(r.moderation_state, viewer_is_author=True)]

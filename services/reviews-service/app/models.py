@@ -50,6 +50,13 @@ class Review(Base):
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now,
                         nullable=False)
 
+    # Moderation. Defaults to visible: a review is published when written, and
+    # reporting is what takes it down rather than an approval queue holding
+    # every honest review hostage to a moderator's backlog.
+    moderation_state = Column(String(32), nullable=False, default="visible")
+    moderated_at = Column(DateTime(timezone=True), nullable=True)
+    moderation_note = Column(Text, nullable=True)
+
     __table_args__ = (
         # The verified-purchase rule, enforced by the database rather than only
         # by the handler. Two concurrent submissions for one purchase would
@@ -89,3 +96,27 @@ class IdempotencyKey(Base):
     key = Column(String(255), primary_key=True)
     result_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
+
+
+class ReviewReport(Base):
+    """One person saying a review should not be there.
+
+    Distinct from a moderation decision: a report is evidence, and the unique
+    constraint is what makes the threshold mean "three people" rather than
+    "three clicks from whoever cares most".
+    """
+
+    __tablename__ = "review_reports"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    review_id = Column(UUID(as_uuid=True), nullable=False)
+    reporter_id = Column(UUID(as_uuid=True), nullable=False)
+    reason = Column(String(32), nullable=False)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("review_id", "reporter_id",
+                         name="uq_one_report_per_person"),
+        Index("ix_review_reports_review", "review_id"),
+    )

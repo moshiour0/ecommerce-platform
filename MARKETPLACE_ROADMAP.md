@@ -614,8 +614,10 @@ build, and it is worth reading as a list rather than as a footnote:
   that seller-service has never heard of. Their escrow bookings now park
   visibly (ARCHITECTURE_STATE_FINAL.md §5c) rather than blocking the
   queue, but nothing yet reconciles catalog against seller-service.
-- **Listing enforcement is creation-only**, and **refusal-risk scoring** is not
-  built.
+- ~~**Listing enforcement is creation-only**~~ ✅ done 2026-08-22.
+  Checkout refuses a suspended seller's products and search hides them (§3j).
+  **Refusal-risk scoring** is still not built: the signals are known, the model
+  is not, and inventing one would be a guess with a number attached.
 
 ---
 

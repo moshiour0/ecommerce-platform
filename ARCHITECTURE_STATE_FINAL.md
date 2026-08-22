@@ -899,6 +899,54 @@ deliberately not given outbox machinery, which would be pricing a page view
 like money. Nothing yet records views from the storefront itself; the endpoint
 exists and the caller does not.
 
+### 3k. Review moderation (implemented)
+
+Reporting and takedown. **Deliberately not automated text classification**: a
+profanity or abuse model for a marketplace operating in Bengali and English is
+a wordlist somebody has to be accountable for, and inventing one here would
+ship a judgement with a confident face and no author. The signal that actually
+exists is people reporting things.
+
+The design pressure runs both ways, and both failures are real:
+
+* Hide on a single report, and any seller can silence a one-star review with
+  one click — which turns the review system into a formality.
+* Never hide automatically, and abusive content stays up until a human happens
+  to look, which on a platform this size means days.
+
+So: **three distinct reporters** hide a review pending a human. Distinct is
+enforced by a unique constraint on `(review_id, reporter_id)`, not just in the
+handler — the threshold counts people, and without the constraint one
+determined person could hide anything by filing three times, which is precisely
+the abuse the threshold exists to prevent.
+
+**A moderator's ruling is final against volume.** `REMOVED` and `CLEARED` are
+never re-hidden by further reports; otherwise a ruling lasts exactly as long as
+it takes to file three more, and the appeal process is whoever has the most
+accounts. Verified live: four further reports on a cleared review return 409.
+
+**Hidden from the page and from the average, by the same predicate.** A review
+hidden from view but still counted in the rating is worse than either — the
+number moves for a reason nobody can see. Verified: a hidden review took the
+product from 5.0-from-1 to `None`-from-0, and clearing it restored 5.0.
+
+**The author always sees their own**, hidden or not. A review that vanishes
+without trace teaches its writer only that the platform cannot be trusted, and
+the ones most likely to be reported are the ones most worth being able to
+appeal.
+
+Report reasons are a closed set (`abusive`, `spam`, `irrelevant`,
+`personal_info`, `fake`). Free-text reasons cannot be counted, cannot be
+routed, and turn a moderation queue into a reading exercise. The queue is
+served oldest-first: newest-first leaves the worst cases at the bottom forever.
+
+**Named gap: the moderation endpoints have no authorisation.** Every service
+here trusts the gateway to establish identity, and the gateway has no role
+model — so there is nothing this service could check that would mean anything.
+Rather than add a header nobody verifies, they are left unauthenticated and
+unrouted: reachable only inside the mesh, and they must not be exposed
+publicly until the gateway can say "this caller is staff".
+
 ## 4. Webhook Deduplication Strategy (4-Layers)
 External PSP webhooks must pass this exact sequence:
 1. HMAC-SHA256 Signature Verification.

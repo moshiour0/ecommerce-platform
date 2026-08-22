@@ -92,6 +92,7 @@ MIGRATIONS = [
     ("020_order_db_outbox_retry_state.sql", ["order_db"]),
     ("021_review_db_reviews.sql", ["review_db"]),
     ("022_behaviour_db_events.sql", ["behaviour_db"]),
+    ("023_review_db_moderation.sql", ["review_db"]),
 ]
 
 LEDGER_DDL = """

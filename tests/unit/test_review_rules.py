@@ -319,3 +319,124 @@ def test_an_unrated_seller_reports_unknown_rather_than_neutral():
     signal = quality_signal(Aggregate(None, 0))
     assert signal["rating"] is None
     assert signal["review_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# moderation: reporting and takedown
+# ---------------------------------------------------------------------------
+#
+# Deliberately not automated text classification. A profanity or abuse model
+# for a marketplace operating in Bengali and English is a wordlist somebody has
+# to be accountable for, and inventing one would ship a judgement with a
+# confident face and no author. The signal that actually exists is people
+# reporting things.
+#
+# The design pressure runs both ways: hide on one report and any seller can
+# silence a one-star review with a click; never hide automatically and abusive
+# content stays up for days. Hence several *distinct* reporters, and a human
+# ruling that volume cannot overturn.
+
+ModerationState = review_rules.ModerationState
+ReportReason = review_rules.ReportReason
+is_public = review_rules.is_public
+may_report = review_rules.may_report
+state_after_report = review_rules.state_after_report
+visible_to = review_rules.visible_to
+
+
+def test_a_normal_review_is_public():
+    assert is_public(ModerationState.VISIBLE)
+
+
+def test_a_reported_review_is_hidden_from_buyers():
+    assert not is_public(ModerationState.HIDDEN_PENDING_REVIEW)
+    assert not is_public(ModerationState.REMOVED)
+
+
+def test_a_review_a_moderator_cleared_is_public_again():
+    """A human looked and said it stays, so it is as visible as any other."""
+    assert is_public(ModerationState.CLEARED)
+
+
+def test_an_unrecognised_state_fails_towards_hiding():
+    """A column that grew a value this version does not understand.
+
+    Failing towards showing would publish something nobody has ruled on.
+    """
+    assert not is_public("something_new")
+    assert not is_public(None)
+
+
+def test_hiding_and_counting_use_the_same_predicate():
+    """A review hidden from the page but still counted in the average is worse
+    than either -- the rating moves for a reason nobody can see."""
+    for state in ModerationState:
+        assert is_public(state) == (state in review_rules.PUBLIC_STATES)
+
+
+# --- what a report can do --------------------------------------------------
+
+def test_one_report_does_not_hide_a_review():
+    """A seller who dislikes a review is the person most motivated to file one."""
+    assert state_after_report(ModerationState.VISIBLE, 1) is ModerationState.VISIBLE
+    assert state_after_report(ModerationState.VISIBLE, 2) is ModerationState.VISIBLE
+
+
+def test_several_distinct_reporters_hide_it_pending_a_human():
+    assert state_after_report(ModerationState.VISIBLE, 3) \
+        is ModerationState.HIDDEN_PENDING_REVIEW
+
+
+def test_reports_never_overturn_a_moderator():
+    """Otherwise a ruling lasts exactly as long as it takes to file three more,
+    and the appeal process is whoever has the most accounts."""
+    assert state_after_report(ModerationState.CLEARED, 50) is ModerationState.CLEARED
+    assert state_after_report(ModerationState.REMOVED, 50) is ModerationState.REMOVED
+
+
+def test_an_author_cannot_report_their_own_review():
+    decision = may_report(ModerationState.VISIBLE, reporter_is_author=True)
+    assert not decision.allowed
+
+
+def test_a_review_already_ruled_on_cannot_be_reported_again():
+    for state in (ModerationState.REMOVED, ModerationState.CLEARED):
+        assert not may_report(state, reporter_is_author=False).allowed
+
+
+def test_a_hidden_review_can_still_be_reported():
+    """More reports on something already hidden are useful signal for whoever
+    picks it up, and refusing them would lose that."""
+    assert may_report(ModerationState.HIDDEN_PENDING_REVIEW,
+                      reporter_is_author=False).allowed
+
+
+# --- what the author sees --------------------------------------------------
+
+def test_an_author_always_sees_their_own_review():
+    """A review that vanishes with no trace teaches its writer only that the
+    platform cannot be trusted -- and the ones most likely to be reported are
+    the ones most worth being able to appeal."""
+    for state in ModerationState:
+        assert visible_to(state, viewer_is_author=True)
+
+
+def test_everyone_else_sees_only_public_reviews():
+    assert not visible_to(ModerationState.HIDDEN_PENDING_REVIEW,
+                          viewer_is_author=False)
+    assert visible_to(ModerationState.VISIBLE, viewer_is_author=False)
+
+
+# --- the reasons -----------------------------------------------------------
+
+def test_report_reasons_are_a_closed_set():
+    """Free-text reasons cannot be counted, cannot be routed, and turn a
+    moderation queue into a reading exercise."""
+    assert len(list(ReportReason)) >= 4
+    assert ReportReason("abusive") is ReportReason.ABUSIVE
+
+
+def test_an_invented_reason_is_rejected():
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        ReportReason("i just do not like it")
