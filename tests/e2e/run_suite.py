@@ -56,6 +56,7 @@ TESTS = [
     "test_19_seller_projection",
     "test_20_personalisation",
     "test_21_seller_suspension",
+    "test_22_review_moderation",
     # Last on purpose: these two stop infrastructure. Both put it back and
     # wait for recovery before finishing, but running either earlier would
     # have every test after it sharing a cluster mid-repair.
