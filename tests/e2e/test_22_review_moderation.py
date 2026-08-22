@@ -30,7 +30,8 @@ import asyncio
 import sys
 import uuid
 
-from config import describe, new_client, service_url
+from config import (connect_with_retry, db_url, describe,
+                    new_client, service_url)
 
 REVIEWS = service_url("reviews-service") + "/reviews"
 
@@ -56,27 +57,43 @@ def finish():
     return 0
 
 
-async def find_reviewed_product(client):
-    """A product with at least one public review, and that review."""
-    res = await client.get(f"{REVIEWS}/moderation/queue")
-    if res.status_code != 200:
-        return None, None
-    # Anything already in the queue is not usable: it has been ruled on or is
-    # mid-flow, and this test needs a review starting from visible.
-    res = await client.post("http://localhost:9200/products/_search", json={
-        "size": 50, "_source": ["product_id"]})
-    if res.status_code != 200:
-        return None, None
-    for hit in res.json()["hits"]["hits"]:
-        product_id = hit["_source"].get("product_id")
-        if not product_id:
-            continue
-        listed = await client.get(f"{REVIEWS}/products/{product_id}")
-        if listed.status_code != 200:
-            continue
-        for review in listed.json():
-            if review.get("moderation_state") == "visible":
-                return product_id, review
+async def make_review(client, conn):
+    """Create a review this test owns, rather than hunting for one.
+
+    The first version looked for any review already sitting at `visible`. That
+    made the test depend on residue from test_18 -- and the moment something
+    moderated that review to `cleared`, this test failed with "no visible
+    review to moderate", which says nothing about moderation and everything
+    about the order the suite happened to run in.
+
+    A test that needs a review in a particular state should make one.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT so.id, s.user_id AS buyer_id,
+               (SELECT ol.product_id FROM order_lines ol
+                 WHERE ol.seller_order_id = so.id LIMIT 1) AS product_id
+        FROM seller_orders so
+        JOIN order_saga_states s ON s.id = so.order_id
+        WHERE so.status IN ('DELIVERED', 'SETTLED')
+          AND EXISTS (SELECT 1 FROM order_lines ol
+                       WHERE ol.seller_order_id = so.id)
+        ORDER BY so.created_at DESC
+        LIMIT 40
+        """)
+
+    for row in rows:
+        res = await client.post(f"{REVIEWS}", headers={
+            "x-user-id": str(row["buyer_id"]),
+            "Idempotency-Key": str(uuid.uuid4())}, json={
+            "seller_order_id": str(row["id"]),
+            "product_id": str(row["product_id"]),
+            "product_rating": 4, "seller_rating": 4,
+            "title": "e2e moderation fixture",
+            "body": "Created by test_22 so it does not depend on residue."})
+        if res.status_code == 201:
+            return str(row["product_id"]), res.json()
+        # 409 means this purchase is already reviewed -- try the next one.
     return None, None
 
 
@@ -87,11 +104,16 @@ async def main():
     print(f"-> {describe()}")
 
     async with new_client() as client:
-        print("\n1. Finding a visible review to work with...")
-        product_id, review = await find_reviewed_product(client)
+        print("\n1. Creating a review this test owns...")
+        conn = await connect_with_retry(db_url("order_db"))
+        try:
+            product_id, review = await make_review(client, conn)
+        finally:
+            await conn.close()
+
         if review is None:
-            check(False, "", "no visible review on this stack to moderate; "
-                             "run test_18 first to create one")
+            check(False, "", "could not create a review: no delivered seller "
+                             "order with an unreviewed line on this stack")
             return finish()
         review_id = review["id"]
         author = review["buyer_id"]

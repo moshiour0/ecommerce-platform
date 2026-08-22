@@ -343,3 +343,44 @@ def test_the_two_lists_agree_exactly():
                         "workers/stream-processor/app/consumers/event_rules.py")
     assert set(event_rules.SELLER_SIGNAL_EVENTS) == set(
         projection.REFRESH_TRIGGERS)
+
+
+# ---------------------------------------------------------------------------
+# visibility must never be coalesced
+# ---------------------------------------------------------------------------
+
+def test_suspension_and_reinstatement_are_never_coalesced():
+    """The bug this exists for, and it is not subtle.
+
+    Measured: a suspend and a reinstate arrived 1.3 seconds apart. The suspend
+    refreshed; the reinstate was dropped as "refreshed recently". The seller's
+    entire catalogue stayed hidden afterwards -- and would have stayed hidden
+    indefinitely, because nothing else was ever going to happen to a seller
+    nobody could buy from.
+
+    A suspension that cannot be undone is not a suspension. It is a deletion
+    with extra steps.
+    """
+    for event in ("SellerSuspended", "SellerBanned", "SellerRejected",
+                  "SellerApproved", "SellerReinstated"):
+        assert projection.changes_visibility(event), (
+            f"{event} decides whether products can be seen and must refresh "
+            f"immediately")
+
+
+def test_score_only_events_may_still_be_coalesced():
+    """The window has to keep earning its place.
+
+    A seller delivering twenty orders in a minute should not trigger twenty
+    update-by-queries to arrive at nearly the same rating, and a rating that is
+    thirty seconds stale changes nothing anyone can observe.
+    """
+    for event in ("ReviewPublished", "ReviewUpdated", "SellerOrderDelivered",
+                  "SellerOrderReturned", "SellerOrderCancelled",
+                  "SellerLocationUpdated"):
+        assert not projection.changes_visibility(event)
+
+
+def test_every_visibility_event_is_also_a_refresh_trigger():
+    """Forcing a refresh is useless if the event never reaches the router."""
+    assert projection.VISIBILITY_EVENTS <= projection.REFRESH_TRIGGERS

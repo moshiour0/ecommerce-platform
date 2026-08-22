@@ -2,7 +2,9 @@ import logging
 from typing import Dict, Any
 from ..indexers.es_client import es, INDEX_NAME
 from ..indexers.seller_refresh import refresh_seller
-from ..seller_projection import is_refresh_trigger, seller_id_from
+from ..seller_projection import (changes_visibility,
+                                 is_refresh_trigger,
+                                 seller_id_from)
 
 from python_common.read_model import CATALOG, INVENTORY, PRICING, write_product
 
@@ -76,7 +78,13 @@ def process_event(event_type: str, payload: Dict[str, Any]):
                     f"{event_type} carried no seller id; cannot refresh "
                     f"signals. Payload keys: {sorted(payload)}")
             else:
-                refresh_seller(seller_id)
+                # A visibility change is never coalesced. A suspend and a
+                # reinstate seconds apart would otherwise leave the seller
+                # hidden: the suspend refreshes, the reinstate is dropped as
+                # "recently refreshed", and nothing else is ever going to
+                # happen to a seller nobody can buy from.
+                refresh_seller(seller_id,
+                               force=changes_visibility(event_type))
 
         else:
             logger.debug(f"Ignoring unhandled event type: {event_type}")

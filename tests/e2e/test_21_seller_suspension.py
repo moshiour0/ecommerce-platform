@@ -117,8 +117,16 @@ async def main():
                 continue
             if profile.json().get("status") != "active":
                 continue
+            # Visible, not merely indexed. An active seller can still carry
+            # `seller_may_sell: false` on their documents if a previous run
+            # left the projection stale, and picking one of those made this
+            # test report "nothing visible to hide" -- true, and nothing to do
+            # with the code under test.
             hit = await client.post(f"{ES}/products/_search", json={
-                "size": 1, "query": {"term": {"seller_id": candidate}},
+                "size": 1, "query": {"bool": {
+                    "must": [{"term": {"seller_id": candidate}}],
+                    "filter": [{"bool": {"must_not": [
+                        {"term": {"seller_may_sell": False}}]}}]}},
                 "_source": ["product_id"]})
             hits = hit.json()["hits"]["hits"]
             if hits:
@@ -145,10 +153,12 @@ async def main():
         try:
             await conn.execute(
                 """
-                INSERT INTO inventory_items (product_id, total_quantity, reserved_quantity)
-                VALUES ($1::uuid, 50, 0)
+                INSERT INTO inventory_items (id, product_id,
+                                             quantity_available,
+                                             quantity_reserved, updated_at)
+                VALUES (gen_random_uuid(), $1::uuid, 50, 0, NOW())
                 ON CONFLICT (product_id)
-                DO UPDATE SET total_quantity = 50, reserved_quantity = 0
+                DO UPDATE SET quantity_available = 50, quantity_reserved = 0
                 """, product_id)
         except Exception as exc:
             print(f"      [..]   could not seed stock ({type(exc).__name__}); "
@@ -203,90 +213,124 @@ async def main():
               f"a suspension from a pre-existing problem")
 
         print("\n3. Suspending the seller...")
-        res = await client.post(f"{SELLER}/{seller_id}/suspend",
-                                json={"reason": "e2e: what a suspension stops"})
-        check(res.status_code == 200, "suspended",
-              f"could not suspend: {res.status_code} {res.text[:150]}")
+        # From here on, everything runs inside a try/finally that reinstates.
+        #
+        # This test suspends a *real* seller on a shared stack, and an earlier
+        # version did that with no guarantee of putting them back. It crashed
+        # on a transport timeout between the suspend and the reinstate, and
+        # left a live seller suspended -- catalogue hidden, checkout refused --
+        # until somebody noticed days later. A test that damages the platform
+        # when it fails is worse than no test.
+        suspended = False
+        try:
+            res = await client.post(
+                f"{SELLER}/{seller_id}/suspend",
+                json={"reason": "e2e: what a suspension stops"})
+            suspended = res.status_code == 200
+            check(res.status_code == 200, "suspended",
+                  f"could not suspend: {res.status_code} {res.text[:150]}")
 
-        res = await client.get(f"{SELLER}/{seller_id}/permission")
-        permission = res.json()
-        check(permission.get("may_receive_orders") is False,
-              "seller-service reports may_receive_orders=false",
-              f"a suspended seller may still receive orders: {permission}")
+            res = await client.get(f"{SELLER}/{seller_id}/permission")
+            permission = res.json()
+            check(permission.get("may_receive_orders") is False,
+                  "seller-service reports may_receive_orders=false",
+                  f"a suspended seller may still receive orders: {permission}")
 
-        print("\n4. Checkout now refuses -- the half that matters...")
-        buyer2 = str(uuid.uuid4())
-        res = await client.post(f"{CART}/{buyer2}/items",
-                                json={"item": {"product_id": product_id,
-                                               "quantity": 1}},
-                                headers={"Idempotency-Key": str(uuid.uuid4())})
-        res = await client.post(f"{CHECKOUT}/{buyer2}", json={
-            "telemetry": {"device_id": "suspension-test", "ip": "127.0.0.1"},
-            "destination_region": "BD-Dhaka", "weight_grams": 500},
-            headers={"Idempotency-Key": str(uuid.uuid4())})
-        check(res.status_code == 409,
-              f"checkout was refused with 409 -- a suspension that does not "
-              f"stop orders is not a suspension",
-              f"a suspended seller's product was still checked out: "
-              f"{res.status_code} {res.text[:200]}")
+            print("\n4. Checkout now refuses -- the half that matters...")
+            buyer2 = str(uuid.uuid4())
+            res = await client.post(f"{CART}/{buyer2}/items",
+                                    json={"item": {"product_id": product_id,
+                                                   "quantity": 1}},
+                                    headers={"Idempotency-Key": str(uuid.uuid4())})
+            res = await client.post(f"{CHECKOUT}/{buyer2}", json={
+                "telemetry": {"device_id": "suspension-test", "ip": "127.0.0.1"},
+                "destination_region": "BD-Dhaka", "weight_grams": 500},
+                headers={"Idempotency-Key": str(uuid.uuid4())})
+            check(res.status_code == 409,
+                  f"checkout was refused with 409 -- a suspension that does not "
+                  f"stop orders is not a suspension",
+                  f"a suspended seller's product was still checked out: "
+                  f"{res.status_code} {res.text[:200]}")
 
-        body = res.json() if res.status_code == 409 else {}
-        detail = str(body.get("detail", ""))
-        check("suspend" not in detail.lower() and "ban" not in detail.lower(),
-              "the refusal does not leak the seller's standing to the buyer",
-              f"the refusal names the seller's status: {detail}")
+            body = res.json() if res.status_code == 409 else {}
+            detail = str(body.get("detail", ""))
+            check("suspend" not in detail.lower() and "ban" not in detail.lower(),
+                  "the refusal does not leak the seller's standing to the buyer",
+                  f"the refusal names the seller's status: {detail}")
 
-        print("\n5. Search hides them, without deleting anything...")
-        hidden = await wait_for_visibility(client, seller_id, 0,
-                                           PROJECTION_WAIT_SECONDS)
-        check(hidden,
-              "their products are no longer returned by search",
-              f"after {PROJECTION_WAIT_SECONDS}s "
-              f"{await visible_count(client, seller_id)} product(s) are still "
-              f"visible. Check SELLER_SIGNAL_EVENTS in event_rules -- main.py "
-              f"drops unlisted events before the router runs.")
+            print("\n5. Search hides them, without deleting anything...")
+            hidden = await wait_for_visibility(client, seller_id, 0,
+                                               PROJECTION_WAIT_SECONDS)
+            check(hidden,
+                  "their products are no longer returned by search",
+                  f"after {PROJECTION_WAIT_SECONDS}s "
+                  f"{await visible_count(client, seller_id)} product(s) are still "
+                  f"visible. Check SELLER_SIGNAL_EVENTS in event_rules -- main.py "
+                  f"drops unlisted events before the router runs.")
 
-        still_indexed = await indexed_count(client, seller_id)
-        check(still_indexed == before_indexed,
-              f"all {still_indexed} documents are still in the index -- hidden "
-              f"by a flag, not destroyed",
-              f"documents were lost: {before_indexed} before, "
-              f"{still_indexed} after. A suspension is usually temporary and "
-              f"must not turn reinstatement into a reindex.")
+            still_indexed = await indexed_count(client, seller_id)
+            check(still_indexed == before_indexed,
+                  f"all {still_indexed} documents are still in the index -- hidden "
+                  f"by a flag, not destroyed",
+                  f"documents were lost: {before_indexed} before, "
+                  f"{still_indexed} after. A suspension is usually temporary and "
+                  f"must not turn reinstatement into a reindex.")
 
-        print("\n6. Reinstating brings the catalogue back...")
-        res = await client.post(f"{SELLER}/{seller_id}/reinstate",
-                                json={"reason": "e2e: verification complete"})
-        check(res.status_code == 200, "reinstated",
-              f"could not reinstate: {res.status_code} {res.text[:150]}")
+            print("\n6. Reinstating brings the catalogue back...")
+            res = await client.post(f"{SELLER}/{seller_id}/reinstate",
+                                    json={"reason": "e2e: verification complete"})
+            check(res.status_code == 200, "reinstated",
+                  f"could not reinstate: {res.status_code} {res.text[:150]}")
+            # The cleanup below only has to act if this did not happen -- which
+            # is the whole point of it: the failure mode being guarded against
+            # is never reaching this line at all.
+            if res.status_code == 200:
+                suspended = False
 
-        restored = await wait_for_visibility(client, seller_id, before_visible,
-                                             PROJECTION_WAIT_SECONDS)
-        check(restored,
-              f"all {before_visible} product(s) are visible again",
-              f"only {await visible_count(client, seller_id)} of "
-              f"{before_visible} came back")
+            restored = await wait_for_visibility(client, seller_id, before_visible,
+                                                 PROJECTION_WAIT_SECONDS)
+            check(restored,
+                  f"all {before_visible} product(s) are visible again",
+                  f"only {await visible_count(client, seller_id)} of "
+                  f"{before_visible} came back")
 
-        print("\n7. A seller the projection has never reached stays visible...")
-        # The deploy-safety property. Written as "not explicitly false" rather
-        # than "is true", so shipping this could not empty a catalogue that had
-        # simply never been projected.
-        res = await client.post(f"{ES}/products/_search", json={
-            "size": 0, "query": {"bool": {
-                "must_not": [{"exists": {"field": "seller_may_sell"}}],
-                "filter": [{"bool": {"must_not": [
-                    {"term": {"seller_may_sell": False}}]}}]}}})
-        unprojected_visible = res.json()["hits"]["total"]["value"]
-        res = await client.post(f"{ES}/products/_search", json={
-            "size": 0, "query": {"bool": {"must_not": [
-                {"exists": {"field": "seller_may_sell"}}]}}})
-        unprojected_total = res.json()["hits"]["total"]["value"]
-        check(unprojected_visible == unprojected_total,
-              f"all {unprojected_total} unprojected document(s) remain "
-              f"visible -- unknown is not suspended",
-              f"{unprojected_total - unprojected_visible} unprojected "
-              f"document(s) were hidden; requiring the flag to be true would "
-              f"empty the catalogue on deploy")
+            print("\n7. A seller the projection has never reached stays visible...")
+            # The deploy-safety property. Written as "not explicitly false" rather
+            # than "is true", so shipping this could not empty a catalogue that had
+            # simply never been projected.
+            res = await client.post(f"{ES}/products/_search", json={
+                "size": 0, "query": {"bool": {
+                    "must_not": [{"exists": {"field": "seller_may_sell"}}],
+                    "filter": [{"bool": {"must_not": [
+                        {"term": {"seller_may_sell": False}}]}}]}}})
+            unprojected_visible = res.json()["hits"]["total"]["value"]
+            res = await client.post(f"{ES}/products/_search", json={
+                "size": 0, "query": {"bool": {"must_not": [
+                    {"exists": {"field": "seller_may_sell"}}]}}})
+            unprojected_total = res.json()["hits"]["total"]["value"]
+            check(unprojected_visible == unprojected_total,
+                  f"all {unprojected_total} unprojected document(s) remain "
+                  f"visible -- unknown is not suspended",
+                  f"{unprojected_total - unprojected_visible} unprojected "
+                  f"document(s) were hidden; requiring the flag to be true would "
+                  f"empty the catalogue on deploy")
+
+
+        finally:
+            # Always, even if an assertion failed or a call timed out. The
+            # reinstate is checked rather than fired and forgotten, because a
+            # cleanup that silently fails is the same as no cleanup.
+            if suspended:
+                back = await client.post(
+                    f"{SELLER}/{seller_id}/reinstate",
+                    json={"reason": "e2e: run finished"})
+                if back.status_code != 200:
+                    failures.append(
+                        f"COULD NOT REINSTATE seller {seller_id}: "
+                        f"{back.status_code} {back.text[:150]}. They are still "
+                        f"suspended and need reinstating by hand.")
+                else:
+                    print(f"\n   -> seller {seller_id[:8]} reinstated")
 
     return finish()
 

@@ -73,6 +73,31 @@ REFRESH_TRIGGERS = frozenset({
 })
 
 
+# Events that change whether a seller's products may be *seen* at all, as
+# opposed to how well they score.
+#
+# These must never be coalesced. The refresh window exists so that a seller
+# delivering twenty orders in a minute does not trigger twenty update-by-queries
+# to reach nearly the same rating -- which is fine, because a rating that is
+# thirty seconds stale changes nothing anyone can observe.
+#
+# A visibility flag is not like that. Measured: a suspend and a reinstate
+# arrived 1.3 seconds apart, the suspend refreshed, and the reinstate was
+# dropped as "refreshed recently". The seller's entire catalogue stayed hidden
+# afterwards -- and would have stayed hidden indefinitely, because nothing else
+# was going to happen to a seller nobody could buy from. A suspension that
+# cannot be undone is not a suspension, it is a deletion with extra steps.
+VISIBILITY_EVENTS = frozenset({
+    "SellerSuspended", "SellerBanned", "SellerRejected",
+    "SellerApproved", "SellerReinstated",
+})
+
+
+def changes_visibility(event_type: str) -> bool:
+    """Whether this event must refresh immediately, coalescing be damned."""
+    return event_type in VISIBILITY_EVENTS
+
+
 def is_refresh_trigger(event_type: str) -> bool:
     return event_type in REFRESH_TRIGGERS
 

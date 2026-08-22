@@ -145,9 +145,11 @@ def refresh_seller(seller_id: str, force: bool = False) -> int:
                 "script": {"source": " ".join(script_lines),
                            "params": params, "lang": "painless"},
             },
-            conflicts="proceed",   # another writer got there first; retry is
-                                   # pointless when the next event refreshes
-                                   # the same values anyway
+            # proceed rather than abort: one contended document must not fail
+            # the refresh for the seller's whole catalogue. But "proceed" means
+            # the contended documents are *skipped*, and that is only harmless
+            # for a score -- see the retry below.
+            conflicts="proceed",
             refresh=True,
             request_timeout=60,
         )
@@ -155,11 +157,49 @@ def refresh_seller(seller_id: str, force: bool = False) -> int:
         logger.error(f"Seller signal refresh failed for {seller_id}: {exc}")
         raise
 
-    _mark_refreshed(seller_id)
     updated = result.get("updated", 0)
+    conflicts = result.get("version_conflicts", 0)
+
+    # A skipped document is a lie that nothing reports.
+    #
+    # Measured: a suspend refreshed "across 0 product(s)" because the checkout
+    # moments earlier had triggered an InventoryReserved write to the same
+    # document. Elasticsearch skipped it on a version conflict, the flag was
+    # never written, and the seller stayed visible while suspended. The log
+    # said the refresh had succeeded, because it counted `updated` and never
+    # looked at `version_conflicts`.
+    #
+    # A stale rating is worth little. A stale visibility flag means a suspended
+    # seller is still being sold from, so a forced refresh retries rather than
+    # accepting the skip.
+    # A skipped document is a lie that nothing reports.
+    #
+    # Measured twice, in both directions. A suspend refreshed "across 0
+    # product(s)" because a checkout moments earlier had written to the same
+    # document; Elasticsearch skipped it on a version conflict, the flag was
+    # never written, and the seller stayed visible while suspended. The log
+    # said the refresh had succeeded, because it counted `updated` and never
+    # looked at `version_conflicts`.
+    #
+    # A stale rating is worth little. A stale visibility flag means a suspended
+    # seller is still being sold from, or a reinstated one stays invisible with
+    # no further event coming to fix it.
+    #
+    # So a forced refresh does not hope -- it *verifies*. An immediate retry is
+    # not enough either: the first attempt at this retried 44ms later, while
+    # the contending writer was still in flight, and matched nothing at all.
+    if force:
+        _ensure_visibility_applied(seller_id, fields, script_lines, params,
+                                   conflicts)
+    elif conflicts:
+        logger.info(f"Seller signal refresh for {seller_id} skipped "
+                    f"{conflicts} contended document(s); the next event will "
+                    f"carry the same values")
+
+    _mark_refreshed(seller_id)
     logger.info(f"Refreshed seller signals for {seller_id} across {updated} "
-                f"product(s): rating={signals.rating} "
-                f"reviews={signals.review_count} "
+                f"product(s), {conflicts} conflict(s): "
+                f"rating={signals.rating} reviews={signals.review_count} "
                 f"located={signals.latitude is not None}")
     return updated
 
@@ -167,3 +207,66 @@ def refresh_seller(seller_id: str, force: bool = False) -> int:
 def _iso_now() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
+
+
+# How hard to try before admitting a visibility change did not land.
+VISIBILITY_ATTEMPTS = 5
+VISIBILITY_BACKOFF_SECONDS = 0.4
+
+
+def _ensure_visibility_applied(seller_id, fields, script_lines, params,
+                               first_conflicts):
+    """Keep writing until every one of this seller's documents agrees.
+
+    Checks the result rather than the operation. `update_by_query` reports how
+    many documents it changed and how many it skipped, and neither number
+    answers the only question that matters here: does any document still
+    disagree with the seller's current standing?
+
+    Bounded, and loud when it gives up. A seller whose visibility does not
+    match their status is a merchant either being sold from while suspended or
+    invisible while active, and both need a person rather than a retry.
+    """
+    import time as _time
+
+    desired = fields.get("seller_may_sell")
+    if desired is None:
+        # Unknown standing writes no visibility opinion, so there is nothing to
+        # verify -- and search treats a missing flag as visible by design.
+        return
+
+    for attempt in range(VISIBILITY_ATTEMPTS):
+        try:
+            stale = es.count(index=INDEX_NAME, body={"query": {"bool": {
+                "must": [{"term": {"seller_id": seller_id}}],
+                "must_not": [{"term": {"seller_may_sell": desired}}]}}})
+        except Exception as exc:
+            logger.warning(f"Could not verify seller {seller_id} visibility: "
+                           f"{exc}")
+            return
+
+        remaining = stale.get("count", 0)
+        if remaining == 0:
+            if attempt or first_conflicts:
+                logger.info(f"Seller {seller_id} visibility settled to "
+                            f"may_sell={desired} after {attempt + 1} "
+                            f"attempt(s)")
+            return
+
+        _time.sleep(VISIBILITY_BACKOFF_SECONDS * (attempt + 1))
+        try:
+            es.update_by_query(
+                index=INDEX_NAME,
+                body={"query": {"term": {"seller_id": seller_id}},
+                      "script": {"source": " ".join(script_lines),
+                                 "params": params, "lang": "painless"}},
+                conflicts="proceed", refresh=True, request_timeout=60)
+        except Exception as exc:
+            logger.warning(f"Retry {attempt + 1} for seller {seller_id} "
+                           f"failed: {exc}")
+
+    logger.error(
+        f"Seller {seller_id} still has document(s) disagreeing with "
+        f"may_sell={desired} after {VISIBILITY_ATTEMPTS} attempts. They are "
+        f"either being sold from while suspended, or invisible while active. "
+        f"This needs a person.")
